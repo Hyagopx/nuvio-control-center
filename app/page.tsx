@@ -284,7 +284,7 @@ export default function Home() {
           const nextItems = [...currentSettings.items]
           let nextOrder = nextItems.reduce((highest: number, entry: any) => Math.max(highest, Number(entry.order) || 0), -1) + 1
           for (const setting of [...copiedSettings].sort((a: any, b: any) => (Number(a.order) || 0) - (Number(b.order) || 0))) {
-            const key = catalogCloudKey(setting.addon_id || setting.addonId, setting.type, setting.catalog_id || setting.catalogId).toLowerCase()
+            const key = catalogCloudKey(setting.addon_id, setting.type, setting.catalog_id).toLowerCase()
             const at = nextItems.findIndex((x: any) => catalogCloudKey(x.addon_id || x.addonId, x.type, x.catalog_id || x.catalogId).toLowerCase() === key)
             if (at >= 0) nextItems[at] = { ...nextItems[at], ...setting, order: nextItems[at].order }
             else nextItems.push({ ...setting, order: nextOrder++ })
