@@ -1,4 +1,4 @@
-# Nuvio Control Center v0.11.2 — Correção DNS do Diagnóstico
+# Nuvio Control Center v0.11.3 — Corrigir URLs Raiz dos Addons
 
 Painel pessoal para administrar perfis, addons, catálogos, plugins, coleções, progresso e biblioteca do Nuvio.
 

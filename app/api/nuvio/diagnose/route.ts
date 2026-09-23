@@ -6,13 +6,19 @@ function normalizeAddonBase(raw: string) {
   const u = new URL(raw)
   if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('URL inválida')
   u.pathname = u.pathname.replace(/\/manifest\.json$/i, '').replace(/\/+$/, '')
+  return u
+}
+function manifestUrl(raw: string) {
+  const u = normalizeAddonBase(raw)
+  u.pathname = `${u.pathname.replace(/\/+$/, '')}/manifest.json`
   return u.toString()
 }
-function manifestUrl(raw: string) { return `${normalizeAddonBase(raw)}/manifest.json` }
 function catalogUrl(base: string, c: any) {
   const id = String(c?.id || '').trim(), type = String(c?.type || c?.apiType || '').trim()
   if (!id || !type) return null
-  return `${normalizeAddonBase(base)}/catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`
+  const u = normalizeAddonBase(base)
+  u.pathname = `${u.pathname.replace(/\/+$/, '')}/catalog/${encodeURIComponent(type)}/${encodeURIComponent(id)}.json`
+  return u.toString()
 }
 function extras(c: any): any[] {
   const raw = c?.extra ?? c?.extras ?? []

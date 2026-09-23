@@ -1,3 +1,8 @@
+# Nuvio Control Center v0.11.3 — Corrigir URLs Raiz dos Addons
+
+- A montagem de URLs de manifesto e catálogo agora altera diretamente o caminho da URL, evitando `//manifest.json` para addons instalados na raiz do domínio.
+- Parâmetros de consulta da URL do addon são preservados ao construir os endpoints.
+
 # Nuvio Control Center v0.11.2 — Correção DNS do Diagnóstico
 
 - O resolvedor de DNS fixado agora atende aos dois formatos de callback do Node: endereço único e lista solicitada pelo `autoSelectFamily`.
