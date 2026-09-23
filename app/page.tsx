@@ -198,7 +198,7 @@ export default function Home() {
     } catch (e: any) { setError(e.message || 'Erro') } finally { setLoading(false) }
   }
 
-  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.11.4', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
+  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.11.5', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
   function persistSnapshot(customInv = inv, label = '') {
     if (!customInv) return false
     const partialSections=partialSectionsFor(customInv)
@@ -226,7 +226,7 @@ export default function Home() {
   function downloadTransferPackage(parts: Record<string,boolean>) {
     if (!inv) return
     const source = p
-    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.11.4', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
+    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.11.5', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
     const b = new Blob([JSON.stringify(packageData,null,2)], {type:'application/json'}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`nuvio-transfer-${String(profileLabel).replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(u),500)
   }
   function openTransferPackage(file: File) {
@@ -563,7 +563,7 @@ export default function Home() {
       <div className="brand"><div className="brand-wordmark"><b>NUVIO</b><span>CONTROL</span></div><button className="sidebar-collapse" aria-label={mobileNavOpen?'Fechar menu':sidebarCollapsed?'Expandir menu':'Recolher menu'} title={mobileNavOpen?'Fechar menu':sidebarCollapsed?'Expandir menu':'Recolher menu'} onClick={()=>{if(window.matchMedia('(max-width: 820px)').matches)setMobileNavOpen(false);else setSidebarCollapsed(v=>!v)}}>{mobileNavOpen?'×':sidebarCollapsed?'›':'‹'}</button></div>
       <div className="account-card"><div className="eyebrow">CONTA CONECTADA</div><div className="account-email">{email || 'Snapshot importado'}</div><small>{token ? 'Sessão ativa' : 'Somente leitura'}</small></div>
       <div className="nav"><div className="nav-label">PAINEL</div>{NAV.map(([id,label]) => <button key={id} title={sidebarCollapsed?label:undefined} className={tab===id?'active':''} onClick={() => navigate(id)}><span className="nav-mark" aria-hidden="true">{id==='overview'?'⌂':id==='addons'?'◉':id==='catalogs'?'▤':id==='plugins'?'◇':id==='collections'?'▣':id==='watch'?'◷':'▧'}</span><span className="nav-text">{label}</span><em>{id==='addons'?counts.addons:id==='catalogs'?catalogCount(p,diag):id==='plugins'?counts.plugins:id==='collections'?counts.collections:id==='watch'?counts.progress:id==='library'?counts.library:''}</em></button>)}</div>
-      <div className={`sidebar-utilities${utilitiesOpen?' open':''}`}><button className="utilities-toggle" aria-expanded={utilitiesOpen} onClick={()=>setUtilitiesOpen(v=>!v)}><span>Ferramentas e conta</span><span aria-hidden="true">{utilitiesOpen?'−':'+'}</span></button><div className="sidebar-tools"><button onClick={() => setTransferOpen(true)}><span className="utility-mark">⇄</span><span>Transferência por arquivo</span></button><button onClick={saveSnapshotLocal}><span className="utility-mark">▣</span><span>Backup / Snapshot</span></button><button onClick={openCompare}><span className="utility-mark">◫</span><span>Comparar backup</span></button></div><div className="sidebar-bottom"><button onClick={() => downloadSnapshot()}><span className="utility-mark">↓</span><span>Exportar backup</span></button><button onClick={logout}><span className="utility-mark">↪</span><span>{token ? 'Sair / desconectar' : 'Fechar backup'}</span></button></div></div>
+      <div className={`sidebar-utilities${utilitiesOpen?' open':''}`}><button className="utilities-toggle" aria-expanded={utilitiesOpen} onClick={()=>setUtilitiesOpen(v=>!v)}><span>Ferramentas e conta</span><span aria-hidden="true">{utilitiesOpen?'−':'+'}</span></button><div className="sidebar-tools"><button onClick={() => setTransferOpen(true)}><span className="utility-mark">⇄</span><span>Transferência por arquivo</span></button><button onClick={saveSnapshotLocal}><span className="utility-mark">▣</span><span>Backup / Snapshot</span></button><button onClick={openCompare}><span className="utility-mark">◫</span><span>Comparar backup</span></button></div><div className="sidebar-bottom"><button onClick={() => downloadSnapshot()}><span className="utility-mark">↓</span><span>Exportar backup</span></button><button onClick={logout}><span className="utility-mark">↪</span><span>{token ? 'Sair / desconectar' : 'Fechar backup'}</span></button></div></div><div className="creator-credit">por <b>ReiThomato</b></div>
     </aside>
     {mobileNavOpen&&<button className="mobile-nav-backdrop" aria-label="Fechar menu" onClick={()=>setMobileNavOpen(false)} />}
     <main className="content">
@@ -801,7 +801,7 @@ function TransferImportModal({pkg,close,onApply,saving}:any){
 }
 function labelPart(k:string){return ({addons:'Addons',plugins:'Plugins',collections:'Coleções',catalogs:'Catálogos',library:'Biblioteca',watchProgress:'Progresso',watchedItems:'Histórico de assistidos',progress:'Progresso',history:'Histórico'} as any)[k]||k}
 function persistTransferSnapshot(inv:Inventory){const existing=JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]');existing.unshift({...makeLocalSnapshot(inv),label:'backup automático da conta destino'});localStorage.setItem('nuvio-snapshots',JSON.stringify(existing.slice(0,30)))}
-function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.11.4',inventory:inv}}
+function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.11.5',inventory:inv}}
 
 function AddonProfileTransferModal({item,sourceIndex,profiles,catalogPreferenceCount,saving,dirty,close,onCopy}:any){
  const [selected,setSelected]=useState<number[]>([]),[includeSettings,setIncludeSettings]=useState(true)

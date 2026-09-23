@@ -1,6 +1,6 @@
 # Nuvio Control Center
 
-**Versão documentada: v0.11.4 — Reorganização e Documentação do Repositório**
+**Versão: v0.11.5 — Identidade Visual e Créditos**
 
 Painel pessoal, executado no navegador, para consultar e administrar perfis e dados da conta Nuvio. O projeto também importa/exporta backups, diagnostica addons e integra a biblioteca com o Trakt.
 
@@ -71,3 +71,5 @@ Veja [a arquitetura](docs/ARCHITECTURE.md) para o mapa completo e [a referência
 ## Contribuir ou manter
 
 Leia [`CONTRIBUTING.md`](CONTRIBUTING.md) antes de alterar fluxos de sincronização, autenticação ou consulta externa. Mudanças funcionais e de comportamento devem ser registradas no [CHANGELOG](CHANGELOG.md) com um nome de versão que possa ser usado na mensagem de commit.
+
+<sub>Projeto pessoal de ReiThomato.</sub>

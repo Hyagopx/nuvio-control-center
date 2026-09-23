@@ -1,3 +1,9 @@
+# Nuvio Control Center v0.11.5 — Identidade Visual e Créditos
+
+- Adicionado um ícone vetorial inspirado na marca Nuvio para a aba e instalação como app.
+- Incluída a marca junto ao nome no painel e na tela de entrada.
+- Crédito discreto a ReiThomato na interface, README e metadados do pacote.
+
 # Nuvio Control Center v0.11.4 — Reorganização e Documentação do Repositório
 
 - README reescrito para refletir a aplicação web atual, sua stack e seus fluxos.
