@@ -99,6 +99,7 @@ function finishHealth(manifestOk: boolean, latencyMs: number, catalogs: any[], t
   const slow = manifestOk && latencyMs >= 4000
   const tested = tests.filter(x => x.testable && !x.pending && typeof x.ok === 'boolean')
   const unverified = tests.filter(x => x.protocolStatus === 'unverified' || (x.testable === false && !x.pending)).length
+  const notTestedByLimit = Math.max(0, catalogs.length - tests.length)
   const failed = tested.filter(x => !x.ok)
   const slowCatalogs = tested.filter(x => x.ok && x.latencyMs >= 4000)
   const allCatalogsFailed = tested.length > 0 && failed.length === tested.length
@@ -111,12 +112,12 @@ function finishHealth(manifestOk: boolean, latencyMs: number, catalogs: any[], t
   else if (!catalogs.length) { health = 'attention'; healthReason = 'Manifesto disponível, sem catálogos declarados' }
   else if (tested.length > 0) {
     health = 'healthy'
-    const notes = [unverified ? `${unverified} não verificável(is)` : '', analysis?.warnings?.length ? `${analysis.warnings.length} alerta(s) de protocolo` : ''].filter(Boolean)
+    const notes = [unverified ? `${unverified} não verificável(is)` : '', notTestedByLimit ? `${notTestedByLimit} além do limite sem teste` : '', analysis?.warnings?.length ? `${analysis.warnings.length} alerta(s) de protocolo` : ''].filter(Boolean)
     healthReason = `Manifesto disponível e ${tested.length} catálogo(s) testado(s) responderam${notes.length ? `; ${notes.join(', ')}` : ''}`
   }
   else if (unverified || analysis?.warnings?.length) { health = 'unknown'; healthReason = `Manifesto disponível; catálogos não verificáveis sem parâmetros${analysis?.warnings?.length ? `; ${analysis.warnings.length} alerta(s) informativo(s)` : ''}` }
   else { health = 'unknown'; healthReason = 'Manifesto disponível, mas nenhum catálogo pôde ser confirmado' }
-  return { health, healthReason, summary: { catalogs: catalogs.length, tested: tested.length, failed: failed.length, unverified, warnings: analysis?.warnings?.length || 0, slow: slowCatalogs.length, searchOnly: catalogs.filter(isSearchOnly).length, searchCapable: catalogs.filter(supportsSearch).length } }
+  return { health, healthReason, summary: { catalogs: catalogs.length, tested: tested.length, failed: failed.length, unverified, notTestedByLimit, warnings: analysis?.warnings?.length || 0, slow: slowCatalogs.length, searchOnly: catalogs.filter(isSearchOnly).length, searchCapable: catalogs.filter(supportsSearch).length } }
 }
 
 async function runAddon(raw: string, emit: (result: any, phase: string) => void) {

@@ -187,6 +187,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 @media(max-width:520px){.profile-pin-fields{grid-template-columns:1fr}.managed-profile-row{flex-wrap:wrap}.managed-profile-info{flex-basis:calc(100% - 64px)}.managed-profile-row>button{flex:1}.profile-manager-modal{padding:16px}.profile-manager-modal .modal-actions{position:sticky;bottom:-16px;padding:12px 0 2px;background:#121217}.profile-manager-modal .modal-actions button{flex:1}}
 .profile-dot.has-image{width:22px;height:22px;overflow:hidden;border-radius:50%;vertical-align:middle}.profile-dot.has-image img{display:block;width:100%;height:100%;object-fit:cover;border-radius:inherit}
 
+/* Addon ordering controls stay independent from the clickable details row. */
+.addon-order-cell{cursor:default}.addon-order-controls{display:flex;align-items:center;gap:5px}.order-step{display:inline-grid;place-items:center;flex:0 0 34px;width:34px;height:36px;padding:0;border:1px solid #373a42;border-radius:9px;background:#191b20;color:#e6e7eb;font-size:17px;line-height:1;cursor:pointer;touch-action:manipulation}.order-step:hover:not(:disabled){background:#252830;border-color:#555a66}.order-step:disabled{opacity:.4;cursor:not-allowed}.health-breakdown{display:block;margin-top:3px;color:#a4a8b1;line-height:1.4}
+@media(max-width:680px){.addon-card-table tbody td.addon-order-cell{grid-column:1/-1;align-items:center;flex-direction:row;justify-content:flex-start}.addon-order-controls{width:100%;gap:8px}.addon-order-controls .order-input{width:76px;min-height:42px;height:42px;text-align:center}.order-step{flex-basis:42px;width:42px;height:42px;font-size:20px}.addon-card-table .health-breakdown{white-space:normal}}
+
 /* Final mobile catalog overrides take precedence over legacy breakpoints. */
 @media(max-width:680px){
  .catalog-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center}.catalog-toolbar>.search-wrap{grid-column:1;grid-row:1;min-width:0}.catalog-toolbar>button{grid-column:2;grid-row:1;width:auto;min-height:42px;white-space:nowrap}.catalog-toolbar>.catalog-summary{grid-column:1/-1;width:auto}
