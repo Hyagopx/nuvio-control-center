@@ -1,0 +1,18 @@
+# Dependencies and generated build output
+node_modules/
+.next/
+out/
+build/
+coverage/
+
+# Local environment files and secrets; keep the documented template
+.env*
+!.env.example
+
+# Vercel local project metadata
+.vercel/
+
+# TypeScript incremental cache and operating-system noise
+*.tsbuildinfo
+.DS_Store
+Thumbs.db

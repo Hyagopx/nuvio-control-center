@@ -1,0 +1,575 @@
+'use client'
+
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  addonKey, addonUrl, catalogCloudKey, catalogSettingsForManifests, flattenManifestCatalogs,
+  getField, mediaTitle, mediaType, normalizeCollections, normalizeInventory, profileId, seriesKey,
+  type Addon, type CatalogSettings, type Inventory, type ProfileRecord,
+} from '../lib/nuvio'
+
+const NAV = [
+  ['overview', 'Visão geral', 'Resumo da conta'],
+  ['addons', 'Addons', 'Extensões instaladas'],
+  ['catalogs', 'Catálogos', 'Todos os catálogos'],
+  ['plugins', 'Plugins', 'Extensões de serviço'],
+  ['collections', 'Coleções', 'Coleções e organização'],
+  ['watch', 'Progresso', 'Progresso e histórico'],
+  ['library', 'Biblioteca', 'Itens salvos e Trakt'],
+] as const
+
+const EMPTY_PROFILE: ProfileRecord = { profile: {}, addons: [], plugins: [], collections: [], watchProgress: [], watchedItems: [], library: [], catalogSettings: null }
+type Snapshot = { schemaVersion: number; exportedAt: string; source: string; inventory: Inventory }
+type Health = { health?: 'healthy' | 'attention' | 'fail' | 'unknown'; latencyMs?: number; error?: string; healthReason?: string; manifest?: any; catalogTests?: any[]; summary?: any; phase?: string }
+type Session = { email: string; refresh_token: string }
+
+function recordManifestChange(profile:number,url:string,manifest:any){
+  const fingerprint=(value:any)=>{const stable=(v:any):string=>JSON.stringify(v,(k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.keys(x).sort().reduce((o:any,key)=>{o[key]=x[key];return o},{ }):x);let hash=2166136261;for(const char of stable(value)){hash^=char.charCodeAt(0);hash=Math.imul(hash,16777619)}return (hash>>>0).toString(16)}
+  const key=`nuvio-manifest:${profile}:${addonKey(url)}`,version=String(manifest?.version||'');const next={fingerprint:fingerprint(manifest),version,observedAt:new Date().toISOString()}
+  try{const previous=JSON.parse(localStorage.getItem(key)||'null');localStorage.setItem(key,JSON.stringify(next));if(!previous)return{state:'first',version};return{state:previous.fingerprint===next.fingerprint?'same':'changed',previousVersion:String(previous.version||''),version,observedAt:previous.observedAt}}catch{return{state:'unavailable',version}}
+}
+
+
+export default function Home() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [token, setToken] = useState('')
+  const [refreshToken, setRefreshToken] = useState('')
+  const [remember, setRemember] = useState(true)
+  const [booting, setBooting] = useState(true)
+  const [inv, setInv] = useState<Inventory | null>(null)
+  const [active, setActive] = useState(0)
+  const [tab, setTab] = useState('overview')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  const [utilitiesOpen, setUtilitiesOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [diag, setDiag] = useState<Record<string, Health>>({})
+  const [diagLoading, setDiagLoading] = useState(false)
+  const [diagProgress, setDiagProgress] = useState({ completed: 0, total: 0 })
+  const [query, setQuery] = useState('')
+  const [selected, setSelected] = useState<any | null>(null)
+  const [snapshotOpen, setSnapshotOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [compare, setCompare] = useState<Inventory | null>(null)
+  const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [profileModal, setProfileModal] = useState(false)
+  const [profileName, setProfileName] = useState('')
+  const [profileManagerOpen, setProfileManagerOpen] = useState(false)
+  const [profileFormOpen, setProfileFormOpen] = useState(false)
+  const [profileEditIndex, setProfileEditIndex] = useState<number | null>(null)
+  const [profileDraft, setProfileDraft] = useState({ name: '', avatarId: '', avatarUrl: '', avatarColorHex: '#8b5cf6', pin: '', currentPin: '' })
+  const [addonModal, setAddonModal] = useState<{ mode: 'add' | 'edit'; item?: Addon } | null>(null)
+  const [transferOpen, setTransferOpen] = useState(false)
+  const [collectionModal, setCollectionModal] = useState<any | null>(null)
+  const [collectionImportOpen, setCollectionImportOpen] = useState(false)
+  const [transferFileOpen, setTransferFileOpen] = useState(false)
+  const [transferPackage, setTransferPackage] = useState<any | null>(null)
+  const transferFileRef = useRef<HTMLInputElement>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const collectionFileRef = useRef<HTMLInputElement>(null)
+
+  const p = inv?.profiles?.[active] || inv?.profiles?.[0] || EMPTY_PROFILE
+  const counts = { addons: p.addons.length, plugins: p.plugins.length, collections: p.collections.length, progress: p.watchProgress.length, library: p.library.length, watched: p.watchedItems.length }
+
+  useEffect(() => {
+    const raw = localStorage.getItem('nuvio-session')
+    if (!raw) { setBooting(false); return }
+    try {
+      const session: Session = JSON.parse(raw)
+      setEmail(session.email)
+      fetch('/api/nuvio/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: session.refresh_token }) })
+        .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Sessão expirada'); return d })
+        .then(async d => {
+          setToken(d.access_token); setRefreshToken(d.refresh_token || session.refresh_token)
+          localStorage.setItem('nuvio-session', JSON.stringify({ email: session.email, refresh_token: d.refresh_token || session.refresh_token }))
+          const next = await fetchInventoryStatic(d.access_token)
+          setInv(next)
+        })
+        .catch(() => localStorage.removeItem('nuvio-session'))
+        .finally(() => setBooting(false))
+    } catch { localStorage.removeItem('nuvio-session'); setBooting(false) }
+  }, [])
+
+  useEffect(() => {
+    const handler=(e:BeforeUnloadEvent)=>{ if(dirty){ e.preventDefault(); e.returnValue='Você tem alterações não salvas.' } }
+    window.addEventListener('beforeunload',handler)
+    return ()=>window.removeEventListener('beforeunload',handler)
+  },[dirty])
+
+  useEffect(() => {
+    if (!inv || !token || (tab !== 'catalogs' && tab !== 'addons') || Object.keys(diag).length) return
+    diagnose(p.addons)
+  }, [tab, inv, token])
+
+  async function fetchInventoryStatic(accessToken: string) {
+    const r = await fetch('/api/nuvio/inventory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: accessToken }) })
+    const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha ao carregar inventário')
+    return normalizeInventory(d)
+  }
+  async function fetchInventory(accessToken = token) { if (!accessToken) throw new Error('Sessão Nuvio não disponível.'); return fetchInventoryStatic(accessToken) }
+
+  async function login(e: React.FormEvent) {
+    e.preventDefault(); setLoading(true); setError(''); setNotice('')
+    try {
+      const r = await fetch('/api/nuvio/sign-in', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
+      const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha no login')
+      const next = await fetchInventory(d.access_token)
+      setToken(d.access_token); setRefreshToken(d.refresh_token || ''); setInv(next); setPassword(''); setActive(0); setTab('overview'); setDirty(false)
+      if (remember && d.refresh_token) localStorage.setItem('nuvio-session', JSON.stringify({ email, refresh_token: d.refresh_token }))
+      else localStorage.removeItem('nuvio-session')
+    } catch (e: any) { setError(e.message || 'Erro') } finally { setLoading(false) }
+  }
+
+  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.9', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
+  function persistSnapshot(customInv = inv, label = '') {
+    if (!customInv) return
+    const existing = JSON.parse(localStorage.getItem('nuvio-snapshots') || '[]')
+    existing.unshift({ ...makeSnapshot(customInv), label }); localStorage.setItem('nuvio-snapshots', JSON.stringify(existing.slice(0, 30)))
+  }
+  function saveSnapshotLocal() { if (!inv) return; persistSnapshot(); setNotice('Backup local salvo no navegador.'); setSnapshotOpen(true) }
+  function downloadSnapshot(customInv = inv) {
+    if (!customInv) return
+    const b = new Blob([JSON.stringify(makeSnapshot(customInv), null, 2)], { type: 'application/json' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = `nuvio-backup-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 500)
+  }
+  function importSnapshot(file: File) {
+    const reader = new FileReader(); reader.onload = () => { try { const raw = JSON.parse(String(reader.result)); const data = normalizeInventory(raw?.inventory?.profiles ? raw.inventory : raw); setInv(data); setToken(''); setRefreshToken(''); setEmail(''); setActive(0); setTab('overview'); setSelected(null); setImportOpen(false); setDirty(false); setError(''); setNotice('Backup aberto somente para consulta. Ele não altera a conta.'); } catch (e: any) { setError(e.message || 'Backup inválido.') } }; reader.readAsText(file)
+  }
+  function openCompare() { const saved = JSON.parse(localStorage.getItem('nuvio-snapshots') || '[]'); if (saved.length) { setCompare(normalizeInventory(saved[0].inventory)); setSnapshotOpen(true) } else setError('Ainda não há backups locais.') }
+
+  function sanitizeTransferPart(kind: string, value: any) {
+    if (kind === 'addons') return (Array.isArray(value) ? value : []).map((x:any,i:number)=>({ url: addonUrl(x?.url || ''), name: String(x?.name || x?.display_name || ''), enabled: x?.enabled !== false, sort_order: i })).filter((x:any)=>x.url)
+    if (kind === 'plugins') return (Array.isArray(value) ? value : []).map((x:any,i:number)=>({ url: String(x?.url || x?.repository || ''), name: String(x?.name || x?.display_name || ''), enabled: x?.enabled !== false, sort_order: i })).filter((x:any)=>x.url)
+    return structuredClone(value ?? [])
+  }
+  function downloadTransferPackage(parts: Record<string,boolean>) {
+    if (!inv) return
+    const source = p
+    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.9', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
+    const b = new Blob([JSON.stringify(packageData,null,2)], {type:'application/json'}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`nuvio-transfer-${String(profileLabel).replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(u),500)
+  }
+  function openTransferPackage(file: File) {
+    const reader = new FileReader(); reader.onload=()=>{ try { const raw=JSON.parse(String(reader.result)); if(raw?.kind!=='nuvio-transfer-package' || !raw?.parts) throw new Error('Este arquivo não é um pacote de transferência do Nuvio Control Center.'); setTransferPackage(raw); setTransferFileOpen(true) } catch(e:any){setError(e.message||'Pacote inválido.')} }; reader.readAsText(file)
+  }
+  async function applyTransferPackage(pkg:any, selectedParts: Record<string,boolean>, mode:'merge'|'replace') {
+    if (!token) { setError('Conecte uma conta Nuvio destino antes de importar.'); return }
+    setSaving(true); setError('')
+    try {
+      persistSnapshot(inv, 'backup antes da importação de pacote')
+      const next = structuredClone(p) as ProfileRecord
+      const part = (k:string) => pkg.parts?.[k]
+      if (selectedParts.addons && Array.isArray(part('addons'))) next.addons = mode==='replace' ? part('addons') : mergeByUrl(next.addons, part('addons'))
+      if (selectedParts.plugins && Array.isArray(part('plugins'))) next.plugins = mode==='replace' ? part('plugins') : mergeByUrl(next.plugins, part('plugins'))
+      if (selectedParts.collections && Array.isArray(part('collections'))) next.collections = mode==='replace' ? part('collections') : mergeCollections(next.collections, part('collections'))
+      if (selectedParts.library && Array.isArray(part('library'))) next.library = mode==='replace' ? part('library') : mergeByIdentity(next.library, part('library'))
+      if (selectedParts.progress && Array.isArray(part('watchProgress'))) next.watchProgress = mode==='replace' ? part('watchProgress') : mergeByIdentity(next.watchProgress, part('watchProgress'))
+      if (selectedParts.history && Array.isArray(part('watchedItems'))) next.watchedItems = mode==='replace' ? part('watchedItems') : mergeByIdentity(next.watchedItems, part('watchedItems'))
+      if (selectedParts.catalogs && part('catalogs')) next.catalogSettings = mergeCatalogSettings(next.catalogSettings, part('catalogs'), mode)
+      const kinds: Array<[string,any]> = [['addons',next.addons],['plugins',next.plugins],['collections',next.collections],['catalog-settings',next.catalogSettings],['library',next.library],['watch-progress',next.watchProgress],['watched-items',next.watchedItems]]
+      for (const [kind,items] of kinds) { const key = kind==='catalog-settings'?'catalogs':kind; if (!selectedParts[key]) continue; const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileId(p),kind,items,settings:kind==='catalog-settings'?items:undefined})}); const d=await r.json(); if(!r.ok) throw new Error(d.error||`Falha ao importar ${key}`) }
+      const fresh=await fetchInventory(token); setInv(fresh); setDirty(false); setTransferFileOpen(false); setTransferPackage(null); setNotice('Pacote importado, salvo e verificado na conta atual.')
+    } catch(e:any){setError(e.message||'Falha na importação')} finally {setSaving(false)}
+  }
+
+  async function diagnose(rows: Addon[]) {
+    const urls = rows.map(x => x.url).filter(Boolean); if (!urls.length) return
+    setDiagLoading(true); setError(''); setNotice(''); setDiag({}); setDiagProgress({ completed: 0, total: urls.length })
+    try {
+      const r = await fetch('/api/nuvio/diagnose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls }) })
+      if (!r.ok) { const d = await r.json(); throw new Error(d.error || 'Falha no diagnóstico') }
+      if (!r.body) throw new Error('O navegador não recebeu o fluxo do diagnóstico.')
+      const reader = r.body.getReader(), decoder = new TextDecoder()
+      let buffer = '', receivedDone = false
+      while (true) {
+        const { value, done } = await reader.read()
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+        const events = buffer.split(/\r?\n\r?\n/); buffer = events.pop() || ''
+        for (const event of events) {
+          const dataLine = event.split(/\r?\n/).find(line => line.startsWith('data:'))
+          if (!dataLine) continue
+          const message = JSON.parse(dataLine.slice(5).trim())
+          if (message.type === 'progress') setDiagProgress({ completed: message.completed, total: message.total })
+          if (message.type === 'result') {
+            const result = { ...message.result, phase: message.phase }
+            if (result.manifest) result.manifestChange = recordManifestChange(profileId(p), result.url, result.manifest)
+            setDiag(previous => ({ ...previous, [result.url]: result }))
+          }
+          if (message.type === 'error') throw new Error(message.error || 'Falha no diagnóstico')
+          if (message.type === 'done') {
+            receivedDone = true
+            setDiagProgress({ completed: message.completed, total: message.total })
+            setNotice(`Diagnóstico atualizado para ${message.completed} addon(s).`)
+          }
+        }
+        if (done) break
+      }
+      if (!receivedDone) throw new Error('O fluxo do diagnóstico terminou antes de confirmar todos os resultados.')
+    } catch (e: any) { setError(e.message || 'Falha no diagnóstico') } finally { setDiagLoading(false) }
+  }
+  function updateProfile(mutator: (current: ProfileRecord) => ProfileRecord) { if (!inv) return; const profiles = inv.profiles.map((x, i) => i === active ? mutator(x) : x); setInv({ ...inv, fetchedAt: new Date().toISOString(), profiles }); setDirty(true) }
+
+  async function saveKind(kind: 'addons' | 'plugins' | 'collections', itemsOverride?: any[]) {
+    if (!token) { setError('Snapshot é somente leitura.'); return }
+    setSaving(true); setError(''); setNotice('')
+    try {
+      persistSnapshot(inv, `antes de salvar ${kind}`)
+      const items = itemsOverride || (kind === 'addons' ? p.addons : kind === 'plugins' ? p.plugins : p.collections)
+      const r = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(p), kind, items }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha ao salvar')
+      const fresh = await fetchInventory(token); setInv(fresh); setDirty(false); setNotice(`${kind === 'addons' ? 'Addons' : kind === 'plugins' ? 'Plugins' : 'Collections'} salvos e verificados.`)
+    } catch (e: any) { setError(e.message || 'Falha ao salvar') } finally { setSaving(false) }
+  }
+  async function saveCatalogSettings(settings: CatalogSettings) {
+    if (!token) { setError('Snapshot é somente leitura.'); return }
+    setSaving(true); setError('')
+    try {
+      persistSnapshot(inv, 'antes de salvar catálogos')
+      const r = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(p), kind: 'catalog-settings', settings }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha ao salvar catálogos')
+      const fresh = await fetchInventory(token); setInv(fresh); setDirty(false); setNotice('Catálogos salvos na conta e sincronização verificada.')
+    } catch (e: any) { setError(e.message || 'Falha ao salvar catálogos') } finally { setSaving(false) }
+  }
+  async function saveAll() {
+    if (!token) { setError('Snapshot é somente leitura.'); return }
+    setSaving(true); setError(''); setNotice('')
+    try {
+      persistSnapshot(inv, 'backup antes de salvar todas as alterações')
+      const operations: Array<{kind:string;items:any;settings?:any}> = [
+        {kind:'addons',items:p.addons},
+        {kind:'plugins',items:p.plugins},
+        {kind:'collections',items:p.collections},
+        {kind:'catalog-settings',items:buildCatalogSettings(p,diag),settings:buildCatalogSettings(p,diag)},
+        {kind:'library',items:p.library},
+        {kind:'watch-progress',items:p.watchProgress},
+        {kind:'watched-items',items:p.watchedItems},
+      ]
+      for (const op of operations) {
+        const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileId(p),kind:op.kind,items:op.items,settings:op.settings})})
+        const d=await r.json(); if(!r.ok) throw new Error(d.error||`Falha ao salvar ${op.kind}`)
+      }
+      const fresh=await fetchInventory(token)
+      const confirmed=fresh.profiles.find(x=>profileId(x)===profileId(p))
+      const differences=confirmed?verifyCoreProfile(p,confirmed,diag):['O perfil não apareceu na releitura da conta.']
+      if(differences.length) throw new Error(`A Cloud foi relida, mas divergiu em: ${differences.join('; ')}. Suas alterações locais foram mantidas.`)
+      setInv(fresh); setDirty(false); setNotice('Alterações salvas, relidas e confirmadas na conta.')
+    } catch(e:any){setError(e.message||'Falha ao salvar todas as alterações')} finally {setSaving(false)}
+  }
+  async function saveProfileName() {
+    if (!token) { setError('Snapshots são somente leitura.'); return }
+    setSaving(true); setError(''); try { const r = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(p), kind: 'profile-name', name: profileName }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha'); const fresh = await fetchInventory(token); setInv(fresh); setProfileModal(false); setDirty(false); setNotice('Nome do perfil atualizado.') } catch (e: any) { setError(e.message || 'Falha') } finally { setSaving(false) }
+  }
+
+  function openProfileEditor(index: number | null) {
+    const source = index === null ? null : inv?.profiles[index]?.profile
+    setProfileEditIndex(index)
+    setProfileFormOpen(true)
+    setProfileDraft({
+      name: String(source?.name || ''), avatarId: String(source?.avatar_id || source?.avatarId || ''),
+      avatarUrl: String(source?.avatar_url || source?.avatarUrl || ''), avatarColorHex: String(source?.avatar_color_hex || source?.avatarColorHex || '#8b5cf6'), pin: '', currentPin: '',
+    })
+  }
+
+  async function saveManagedProfile() {
+    if (!token || !inv) { setError('Conecte uma conta Nuvio para gerenciar perfis.'); return }
+    const name = profileDraft.name.trim()
+    if (!name) { setError('Informe o nome do perfil.'); return }
+    const isNew = profileEditIndex === null
+    if (isNew && inv.profiles.length >= 6) { setError('O Nuvio permite até 6 perfis por conta.'); return }
+    const profileIndex = isNew ? ([1,2,3,4,5,6].find(id => !inv.profiles.some(x => profileId(x) === id)) || 0) : profileId(inv.profiles[profileEditIndex!])
+    if (!profileIndex) { setError('Não foi possível reservar um índice para o novo perfil.'); return }
+    const previous = isNew ? {} : inv.profiles[profileEditIndex!].profile
+    const nextProfile = {
+      ...previous, profile_index: profileIndex, name, avatar_color_hex: profileDraft.avatarColorHex,
+      avatar_id: profileDraft.avatarId || null, avatar_url: profileDraft.avatarUrl.trim() || null,
+      uses_primary_addons: previous?.uses_primary_addons === true, uses_primary_plugins: previous?.uses_primary_plugins === true,
+      profile_background_id: previous?.profile_background_id ?? null, profile_background_url: previous?.profile_background_url ?? null,
+    }
+    const allProfiles = inv.profiles.map(x => x.profile)
+    const payload = isNew ? [...allProfiles, nextProfile] : allProfiles.map((x,i)=>i===profileEditIndex?nextProfile:x)
+    setSaving(true); setError(''); setNotice('')
+    try {
+      const push = await fetch('/api/nuvio/mutate', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token,profileId:profileIndex,kind:'profiles',profiles:payload}) })
+      const pushed = await push.json(); if (!push.ok) throw new Error(pushed.error || 'Falha ao salvar perfil.')
+      if (profileDraft.pin.trim()) {
+        const pinResponse = await fetch('/api/nuvio/mutate', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token,profileId:profileIndex,kind:'profile-pin',pin:profileDraft.pin.trim(),currentPin:profileDraft.currentPin.trim()}) })
+        const pinResult = await pinResponse.json(); if (!pinResponse.ok) throw new Error(pinResult.error || 'Perfil salvo, mas não foi possível atualizar o PIN.')
+      }
+      const fresh = await fetchInventory(token)
+      setInv(fresh); setActive(Math.max(0,fresh.profiles.findIndex(x=>profileId(x)===profileIndex))); setProfileManagerOpen(false); setProfileFormOpen(false); setDirty(false)
+      setNotice(isNew ? `Perfil “${name}” criado e sincronizado.` : `Perfil “${name}” atualizado e sincronizado.`)
+    } catch (e:any) { setError(e.message || 'Falha ao salvar perfil.') } finally { setSaving(false) }
+  }
+
+  async function clearManagedProfilePin(profileIndex:number) {
+    const entered = window.prompt('Informe o PIN atual para removê-lo (deixe vazio se o perfil não tinha PIN).')
+    if (entered === null) return
+    const currentPin = entered
+    setSaving(true); setError('')
+    try {
+      const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileIndex,kind:'profile-pin-clear',currentPin})})
+      const d=await r.json(); if(!r.ok) throw new Error(d.error||'Não foi possível remover o PIN.')
+      const fresh=await fetchInventory(token); setInv(fresh); setNotice('PIN removido e estado atualizado.');
+    } catch(e:any){setError(e.message||'Falha ao remover PIN.')} finally {setSaving(false)}
+  }
+
+  function mergeByUrl(target:any[], incoming:any[]){ const out=[...target]; for(const x of incoming){ const i=out.findIndex((y:any)=>addonKey(y?.url||y?.repository||'')===addonKey(x?.url||x?.repository||'')); if(i>=0) out[i]={...out[i],...x}; else out.push(x) } return out.map((x:any,i:number)=>({...x,sort_order:i})) }
+  function mergeByIdentity(target:any[], incoming:any[]){ const out=[...target]; for(const x of incoming){ const key=String(x?.content_id||x?.contentId||x?.videoId||x?.id||x?.imdb_id||x?.tmdb_id||JSON.stringify(x)); const i=out.findIndex((y:any)=>String(y?.content_id||y?.contentId||y?.videoId||y?.id||y?.imdb_id||y?.tmdb_id||JSON.stringify(y))===key); if(i>=0) out[i]={...out[i],...x}; else out.push(x) } return out }
+  function mergeCollections(target:any[], incoming:any[]){ const out=[...target]; for(const x of incoming){ const key=String(x?.id||x?.title||x?.name||''); const i=out.findIndex((y:any)=>String(y?.id||y?.title||y?.name||'')===key); if(i>=0) out[i]=x; else out.push(x) } return out }
+  function mergeCatalogSettings(target:CatalogSettings|null, incoming:CatalogSettings, mode:'merge'|'replace'):CatalogSettings { if(mode==='replace') return structuredClone(incoming); const base:CatalogSettings = target || {hide_unreleased_content:false,items:[]}; const map=new Map(base.items.map(x=>[catalogCloudKey(x.addon_id,x.type,x.catalog_id),x])); for(const x of incoming.items||[]) map.set(catalogCloudKey(x.addon_id,x.type,x.catalog_id),x); return {...base, ...incoming, items:Array.from(map.values())} }
+
+  function navigate(id: string) { setTab(id); setQuery(''); setSelected(null); setMobileNavOpen(false) }
+  function logout() { localStorage.removeItem('nuvio-session'); setInv(null); setToken(''); setRefreshToken(''); setDiag({}); setSelected(null); setCompare(null); setDirty(false); setNotice('') }
+
+  if (booting) return <div className="login-wrap"><div className="login-card"><div className="brand large"><b>NUVIO</b><span>CONTROL</span></div><div className="login-copy"><h1>Restaurando sessão…</h1><p>Verificando a sessão salva sem pedir sua senha novamente.</p></div></div></div>
+  if (!inv) return <Login email={email} setEmail={setEmail} password={password} setPassword={setPassword} loading={loading} error={error} remember={remember} setRemember={setRemember} onSubmit={login} onImport={() => fileRef.current?.click()} fileRef={fileRef} importSnapshot={importSnapshot} />
+
+  const profileLabel = p.profile?.name || `Perfil ${active + 1}`
+  return <div className={`app-shell${sidebarCollapsed?' sidebar-collapsed':''}${mobileNavOpen?' mobile-nav-open':''}`}>
+    <aside className={`sidebar${mobileNavOpen?' mobile-open':''}`}>
+      <div className="brand"><div className="brand-wordmark"><b>NUVIO</b><span>CONTROL</span></div><button className="sidebar-collapse" aria-label={mobileNavOpen?'Fechar menu':sidebarCollapsed?'Expandir menu':'Recolher menu'} title={mobileNavOpen?'Fechar menu':sidebarCollapsed?'Expandir menu':'Recolher menu'} onClick={()=>{if(window.matchMedia('(max-width: 820px)').matches)setMobileNavOpen(false);else setSidebarCollapsed(v=>!v)}}>{mobileNavOpen?'×':sidebarCollapsed?'›':'‹'}</button></div>
+      <div className="account-card"><div className="eyebrow">CONTA CONECTADA</div><div className="account-email">{email || 'Snapshot importado'}</div><small>{token ? 'Sessão ativa' : 'Somente leitura'}</small></div>
+      <div className="nav"><div className="nav-label">PAINEL</div>{NAV.map(([id,label]) => <button key={id} title={sidebarCollapsed?label:undefined} className={tab===id?'active':''} onClick={() => navigate(id)}><span className="nav-mark" aria-hidden="true">{id==='overview'?'⌂':id==='addons'?'◉':id==='catalogs'?'▤':id==='plugins'?'◇':id==='collections'?'▣':id==='watch'?'◷':'▧'}</span><span className="nav-text">{label}</span><em>{id==='addons'?counts.addons:id==='catalogs'?catalogCount(p,diag):id==='plugins'?counts.plugins:id==='collections'?counts.collections:id==='watch'?counts.progress:id==='library'?counts.library:''}</em></button>)}</div>
+      <div className={`sidebar-utilities${utilitiesOpen?' open':''}`}><button className="utilities-toggle" aria-expanded={utilitiesOpen} onClick={()=>setUtilitiesOpen(v=>!v)}><span>Ferramentas e conta</span><span aria-hidden="true">{utilitiesOpen?'−':'+'}</span></button><div className="sidebar-tools"><button onClick={() => setTransferOpen(true)}><span className="utility-mark">⇄</span><span>Transferência por arquivo</span></button><button onClick={saveSnapshotLocal}><span className="utility-mark">▣</span><span>Backup / Snapshot</span></button><button onClick={openCompare}><span className="utility-mark">◫</span><span>Comparar backup</span></button></div><div className="sidebar-bottom"><button onClick={() => downloadSnapshot()}><span className="utility-mark">↓</span><span>Exportar backup</span></button><button onClick={logout}><span className="utility-mark">↪</span><span>{token ? 'Sair / desconectar' : 'Fechar backup'}</span></button></div></div>
+    </aside>
+    {mobileNavOpen&&<button className="mobile-nav-backdrop" aria-label="Fechar menu" onClick={()=>setMobileNavOpen(false)} />}
+    <main className="content">
+      <div className="mobile-topbar"><button className="mobile-nav-trigger" aria-label="Abrir menu" onClick={()=>setMobileNavOpen(true)}>☰</button><b>NUVIO <span>CONTROL</span></b></div>
+      <div className="profile-strip"><div className="profile-label">PERFIS</div><div className="profile-tabs">{inv.profiles.map((x,i)=>{const avatar=getProfileAvatarUrl(x.profile,inv.avatarCatalog);return <button key={x.profile?.id || x.profile?.profile_index || i} className={i===active?'active':''} onClick={() => { if(i===active)return; if(dirty && !window.confirm('Há alterações não salvas. Deseja trocar de perfil sem salvar?')) return; setActive(i); setSelected(null); setQuery(''); setDiag({}); if(dirty)setDirty(false) }}><span className={`profile-dot${avatar?' has-image':''}`}>{avatar?<img src={avatar} alt=""/>:(x.profile?.name || `P${i+1}`).slice(0,1).toUpperCase()}</span>{x.profile?.name || `Perfil ${i+1}`}</button>})}</div><button className="ghost profile-manage-button" disabled={!token} onClick={()=>setProfileManagerOpen(true)}>Gerenciar perfis</button></div>
+      <div className="page-head"><div><div className="eyebrow">CENTRO DE CONTROLE NUVIO</div><h1>{NAV.find(x=>x[0]===tab)?.[1] || 'Visão geral'}</h1><p>{profileLabel} · {NAV.find(x=>x[0]===tab)?.[2]}</p></div><div className="head-actions">{dirty && <span className="status-pill">ALTERAÇÕES LOCAIS</span>} {error && <button className="ghost" onClick={() => setError('')}>Fechar erro</button>}</div></div>
+      {notice && <div className="notice">✓ {notice}</div>}{error && <div className="alert">{error}</div>}
+      {dirty && <div className="pending-bar pending-global"><div><b>Há alterações não salvas</b><span>{token ? 'Você pode continuar editando. Ao sair, também será lembrado de salvar.' : 'O arquivo está em modo somente leitura.'}</span></div><div className="pending-actions"><button className="ghost" disabled={saving||!token} onClick={async()=>{try{const fresh=await fetchInventory(token);setInv(fresh);setDirty(false);setNotice('Alterações locais descartadas.')}catch(e:any){setError(e.message||'Não foi possível recarregar.')}}}>Descartar</button><button className="primary" disabled={saving||!token} onClick={saveAll}>{saving?'Salvando…':'Salvar todas'}</button></div></div>}
+      {tab === 'overview' && <Overview p={p} counts={counts} inv={inv} live={!!token} onRename={() => { setProfileManagerOpen(true); openProfileEditor(active) }} />}
+      {tab === 'addons' && <AddonPage profile={p} rows={p.addons} diag={diag} loading={diagLoading} diagnose={() => diagnose(p.addons)} q={query} setQ={setQuery} selected={selected} setSelected={setSelected} update={(items:any[]) => updateProfile(x => ({ ...x, addons: items }))} onAdd={() => setAddonModal({ mode:'add' })} onEdit={(item: Addon) => setAddonModal({ mode:'edit', item })} token={!!token} lastSync={inv.fetchedAt} />}
+      {tab === 'catalogs' && <CatalogPage profile={p} diag={diag} diagLoading={diagLoading} diagProgress={diagProgress} q={query} setQ={setQuery} token={!!token} saving={saving} dirty={dirty} onChange={(settings:CatalogSettings) => updateProfile(x => ({ ...x, catalogSettings: settings }))} onRefresh={() => diagnose(p.addons)} />}
+      {tab === 'plugins' && <PluginPage rows={p.plugins} q={query} setQ={setQuery} selected={selected} setSelected={setSelected} update={(items:any[]) => updateProfile(x => ({ ...x, plugins: items }))} token={!!token} />}
+      {tab === 'collections' && <CollectionPage rows={p.collections} q={query} setQ={setQuery} selected={selected} setSelected={setSelected} update={(items:any[]) => updateProfile(x => ({ ...x, collections: items }))} token={!!token} onAdd={() => setCollectionModal(newCollection())} onImport={() => collectionFileRef.current?.click()} onImportUrl={() => setCollectionImportOpen(true)} onEdit={(x:any)=>setCollectionModal(x)} onExport={(x:any)=>downloadCollection(x)} />}
+      {tab === 'watch' && <WatchPage rows={p.watchProgress} history={p.watchedItems} addons={p.addons} />}
+      {tab === 'library' && <LibraryPage rows={p.library} token={token} profile={p} onUpdate={(items:any[]) => updateProfile(x => ({ ...x, library: items }))} />}
+    </main>
+    {snapshotOpen && <SnapshotModal compare={compare} current={inv} close={() => { setSnapshotOpen(false); setCompare(null) }} onExport={()=>downloadSnapshot()} onImport={()=>fileRef.current?.click()} />}
+    {importOpen && <ImportModal close={() => setImportOpen(false)} fileRef={fileRef} importSnapshot={importSnapshot} />}
+    {profileModal && <SimpleModal title="Renomear perfil" close={() => setProfileModal(false)}><label className="form-label">Nome do perfil<input value={profileName} onChange={e=>setProfileName(e.target.value)} /></label><div className="modal-actions"><button className="ghost" onClick={()=>setProfileModal(false)}>Cancelar</button><button className="primary" disabled={saving||!profileName.trim()} onClick={saveProfileName}>{saving?'Salvando…':'Salvar'}</button></div></SimpleModal>}
+    {profileManagerOpen&&<ProfileManagerModal profiles={inv.profiles} avatarCatalog={inv.avatarCatalog||[]} saving={saving} draft={profileDraft} setDraft={setProfileDraft} editIndex={profileEditIndex} formOpen={profileFormOpen} openEditor={openProfileEditor} back={()=>setProfileFormOpen(false)} saveProfile={saveManagedProfile} clearPin={clearManagedProfilePin} close={()=>{setProfileManagerOpen(false);setProfileFormOpen(false);setProfileEditIndex(null)}} />}
+    {addonModal && <AddonEditor modal={addonModal} existing={p.addons} close={()=>setAddonModal(null)} save={(value:any)=>{ const existing=p.addons; if(addonModal.mode==='edit'){updateProfile(x=>({...x,addons:existing.map(a=>sameAddon(a,addonModal.item)?{...a,...value}:a)}))}else{const incoming=value.items.map((entry:any,i:number)=>({...entry.addon,sort_order:existing.length+i}));const previewCatalogs=value.items.flatMap((entry:any)=>flattenManifestCatalogs(entry.addon,entry.manifest));let catalogSettings=p.catalogSettings;if(previewCatalogs.length){catalogSettings=catalogSettingsForManifests(p.catalogSettings,[...allCatalogs(diag,existing),...previewCatalogs]);const chosen=new Set(value.items.flatMap((entry:any)=>entry.activeCatalogKeys||[]));catalogSettings={...catalogSettings,items:catalogSettings.items.map((item:any)=>chosen.has(catalogCloudKey(item.addon_id,item.type,item.catalog_id))?{...item,enabled:true}:item)}}updateProfile(x=>({...x,addons:[...existing,...incoming],catalogSettings}))}setDiag({});setTab('catalogs');setAddonModal(null) }} />}
+    {collectionModal && <CollectionEditor value={collectionModal} close={()=>setCollectionModal(null)} catalogs={allCatalogs(diag,p.addons)} save={(x:any)=>{ const old=p.collections; const exists=old.some(v=>String(v.id)===String(x.id)); const next=exists?old.map(v=>String(v.id)===String(x.id)?x:v):[...old,x]; updateProfile(v=>({...v,collections:next})); setCollectionModal(null) }} />}
+    {collectionImportOpen && <CollectionUrlModal close={()=>setCollectionImportOpen(false)} onImport={(data:any)=>{ const incoming=normalizeCollections(data); if(incoming.length){ updateProfile(v=>({...v,collections:[...v.collections,...incoming]})); setNotice(`${incoming.length} coleção(ões) importada(s) localmente.`); setCollectionImportOpen(false) } else setError('O JSON não contém coleções reconhecíveis.') }} />}
+    {transferOpen && <TransferModal source={p} sourceLabel={profileLabel} close={()=>setTransferOpen(false)} exportPackage={downloadTransferPackage} onImportFile={()=>transferFileRef.current?.click()} />}{transferFileOpen && transferPackage && <TransferImportModal pkg={transferPackage} close={()=>{setTransferFileOpen(false);setTransferPackage(null)}} onApply={applyTransferPackage} saving={saving} />}
+    <input ref={transferFileRef} type="file" accept=".json,application/json" hidden onChange={e=>{const f=e.target.files?.[0];if(f)openTransferPackage(f);e.currentTarget.value=''}} />
+    <input ref={collectionFileRef} type="file" accept=".json,application/json" hidden onChange={e=>{ const f=e.target.files?.[0]; if(!f)return; const rd=new FileReader(); rd.onload=()=>{try{const data=normalizeCollections(JSON.parse(String(rd.result))); if(data.length){updateProfile(v=>({...v,collections:[...v.collections,...data]}));setNotice(`${data.length} coleção(ões) importada(s).`)}else setError('JSON sem coleções reconhecíveis.')}catch{setError('Arquivo JSON inválido.')}};rd.readAsText(f);e.currentTarget.value='' }} />
+  </div>
+}
+
+function allCatalogs(diag: Record<string,Health>, addons: Addon[]) { return addons.flatMap(a=>flattenManifestCatalogs(a,diag[a.url||'']?.manifest||{})) }
+function getProfileAvatarUrl(profile:any,catalog:any[]=[]){const direct=String(profile?.avatar_url||profile?.avatarUrl||'').trim();if(direct)return direct;const id=String(profile?.avatar_id||profile?.avatarId||'');const item=catalog.find((a:any)=>String(a.id||a.avatar_id||'')===id);if(!item)return '';const url=item.imageUrl||item.image_url||item.url;if(url)return String(url);const path=item.storagePath||item.storage_path;return path?`https://api.nuvio.tv/storage/v1/object/public/avatars/${String(path).replace(/^\//,'')}`:''}
+function homeCatalogSettings(p: ProfileRecord, diag: Record<string,Health>) { return catalogSettingsForManifests(p.catalogSettings,allCatalogs(diag,p.addons)) }
+function homeCatalogIsActive(p: ProfileRecord, c: any) { const item=catalogSettingsForManifests(p.catalogSettings,[c]).items.find(x=>catalogCloudKey(x.addon_id,x.type,x.catalog_id).toLowerCase()===String(c.cloudKey).toLowerCase()); return item?.enabled===true }
+function catalogCount(p: ProfileRecord, diag: Record<string,Health>) { return homeCatalogSettings(p,diag).items.filter(x=>x.enabled!==false).length }
+function buildCatalogSettings(p: ProfileRecord, diag: Record<string,Health>): CatalogSettings { return homeCatalogSettings(p,diag) }
+function verifyCoreProfile(expected:ProfileRecord,actual:ProfileRecord,diag:Record<string,Health>):string[]{
+  const differences:string[]=[]
+  const compareRows=(label:string,left:any[],right:any[],identity:(x:any)=>string)=>{
+    const key=(x:any)=>identity(x),a=left.map(key),b=right.map(key)
+    if(a.length!==b.length||a.some((value,i)=>value!==b[i])) differences.push(`${label} (itens/ordem)`)
+    const actualByKey=new Map(right.map(x=>[key(x),x]))
+    for(const item of left){const saved:any=actualByKey.get(key(item));if(!saved)continue;if((item.enabled!==false)!==(saved.enabled!==false))differences.push(`${label} (estado)`);if(item.name&&String(item.name)!==String(saved.name||saved.display_name||''))differences.push(`${label} (nome)`)}
+  }
+  compareRows('addons',expected.addons,actual.addons,(x:any)=>addonKey(x.url||''))
+  compareRows('plugins',expected.plugins,actual.plugins,(x:any)=>addonKey(x.url||x.repository||''))
+  const stable=(value:any):string=>JSON.stringify(value,(key,val)=>val&&typeof val==='object'&&!Array.isArray(val)?Object.keys(val).sort().reduce((out:any,k)=>{out[k]=val[k];return out},{ }):val)
+  if(stable(expected.collections)!==stable(actual.collections)) differences.push('coleções')
+  if(stable(expected.library)!==stable(actual.library)) differences.push('biblioteca')
+  if(stable(expected.watchProgress)!==stable(actual.watchProgress)) differences.push('progresso')
+  if(stable(expected.watchedItems)!==stable(actual.watchedItems)) differences.push('histórico de assistidos')
+  const desired=catalogSettingsForManifests(expected.catalogSettings,allCatalogs(diag,expected.addons))
+  const received=catalogSettingsForManifests(actual.catalogSettings,allCatalogs(diag,actual.addons))
+  const key=(x:any)=>x.is_collection?`collection/${String(x.collection_id||'').toLowerCase()}`:catalogCloudKey(x.addon_id,x.type,x.catalog_id).toLowerCase()
+  const byKey=new Map(received.items.map(x=>[key(x),x]))
+  for(const item of desired.items){const saved=byKey.get(key(item));if(!saved||((saved.enabled!==false)!==(item.enabled!==false))||Number(saved.order??0)!==Number(item.order??0)||String(saved.custom_title||'')!==String(item.custom_title||'')||(saved.is_collection===true)!==(item.is_collection===true)||String(saved.collection_id||'')!==String(item.collection_id||'')){differences.push('catálogos');break}}
+  if((desired.hide_unreleased_content===true)!==(received.hide_unreleased_content===true))differences.push('preferência de conteúdo não lançado')
+  return Array.from(new Set(differences))
+}
+function sameAddon(a:Addon,b?:Addon){return addonKey(a.url||'')===addonKey(b?.url||'')||String(a.id||'')===String(b?.id||'')}
+function newCollection(){return{id:`collection-${crypto.randomUUID()}`,title:'Nova coleção',viewMode:'GRID',showAllTab:true,pinToTop:false,focusGlowEnabled:false,backdropImageUrl:'',folders:[]}}
+function downloadCollection(x:any){const b=new Blob([JSON.stringify(x,null,2)],{type:'application/json'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`collection-${String(x.title||x.id||'nuvio').replace(/[^a-z0-9_-]+/gi,'-')}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(u),500)}
+
+function Login({email,setEmail,password,setPassword,loading,error,onSubmit,onImport,fileRef,importSnapshot,remember,setRemember}:any){return <div className="login-wrap"><div className="login-card"><div className="brand large"><b>NUVIO</b><span>CONTROL</span></div><div className="login-copy"><h1>Seu centro de operações</h1><p>Gerencie e audite sua configuração Nuvio em um único painel.</p></div><form onSubmit={onSubmit}><label>E-mail Nuvio<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required /></label><label>Senha<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required /></label><label className="check-line"><input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)} /> Manter sessão neste navegador</label><button className="primary full" disabled={loading}>{loading?'Conectando…':'Conectar ao Nuvio'}</button></form>{error&&<div className="alert">{error}</div>}<div className="login-divider"><span>ou</span></div><button className="ghost full" onClick={onImport}>Abrir snapshot</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={e=>e.target.files?.[0]&&importSnapshot(e.target.files[0])}/><p className="security-note">A opção de sessão salva guarda o refresh token no armazenamento local do navegador; sua senha não é salva.</p></div></div>}
+
+function ProfileManagerModal({profiles,avatarCatalog,saving,draft,setDraft,editIndex,formOpen,openEditor,back,saveProfile,clearPin,close}:any){
+  const current=editIndex===null?null:profiles[editIndex]
+  const avatarSrc=(item:any)=>item.imageUrl||item.image_url||item.url||(item.storagePath||item.storage_path?`https://api.nuvio.tv/storage/v1/object/public/avatars/${String(item.storagePath||item.storage_path).replace(/^\//,'')}`:'')
+  const avatarId=(item:any)=>String(item.id||item.avatar_id||'')
+  return <div className="modal-backdrop"><div className="modal profile-manager-modal"><div className="modal-head"><div><div className="eyebrow">CONTA NUVIO</div><h2>{formOpen?(editIndex===null?'Adicionar perfil':'Editar perfil'):'Gerenciar perfis'}</h2></div><button className="icon-btn" onClick={formOpen?back:close}>×</button></div>
+    {!formOpen?<><p className="muted">Perfis, avatares e PIN sincronizados com os aplicativos Nuvio conectados à conta.</p><div className="managed-profile-list">{profiles.map((entry:any,i:number)=>{const x=entry.profile||{};const image=x.avatar_url||x.avatarUrl||avatarSrc(avatarCatalog.find((a:any)=>avatarId(a)===String(x.avatar_id||x.avatarId||'')));return <div className="managed-profile-row" key={x.profile_index||i}><div className="managed-avatar">{image?<img src={image} alt=""/>:<span>{String(x.name||`Perfil ${i+1}`).slice(0,1).toUpperCase()}</span>}</div><div className="managed-profile-info"><b>{x.name||`Perfil ${i+1}`}</b><small>{x.pin_enabled?'PIN ativado':'Sem PIN'} · Perfil {x.profile_index||i+1}</small></div><button className="ghost" onClick={()=>openEditor(i)}>Editar</button>{x.pin_enabled&&<button className="ghost" disabled={saving} onClick={()=>clearPin(Number(x.profile_index))}>Remover PIN</button>}</div>})}</div><div className="modal-actions"><button className="ghost" onClick={close}>Fechar</button><button className="primary" disabled={saving||profiles.length>=6} onClick={()=>openEditor(null)}>Adicionar perfil</button></div>{profiles.length>=6&&<p className="security-note">Limite de 6 perfis da API Nuvio atingido.</p>}</>:<><label className="form-label">Nome do perfil<input autoFocus maxLength={40} value={draft.name} onChange={e=>setDraft((x:any)=>({...x,name:e.target.value}))} placeholder="Ex.: Sala, Crianças…"/></label><div className="avatar-picker"><div className="avatar-picker-head"><b>Avatar</b><span className="muted small">Escolha um avatar do Nuvio ou use uma imagem pública.</span></div><div className="avatar-options">{avatarCatalog.map((a:any)=>{const image=avatarSrc(a);const id=avatarId(a);return <button type="button" key={id||image} className={draft.avatarId===id?'selected':''} title={a.displayName||a.display_name||id} onClick={()=>setDraft((x:any)=>({...x,avatarId:id,avatarUrl:''}))}>{image?<img src={image} alt={a.displayName||a.display_name||'Avatar'}/>:<span>{(a.displayName||a.display_name||'?').slice(0,1)}</span>}</button>})}</div><label className="form-label">URL da foto<input type="url" value={draft.avatarUrl} onChange={e=>setDraft((x:any)=>({...x,avatarUrl:e.target.value,avatarId:''}))} placeholder="https://…"/></label><label className="form-label">Cor de destaque<input type="color" value={draft.avatarColorHex} onChange={e=>setDraft((x:any)=>({...x,avatarColorHex:e.target.value}))}/></label></div><div className="profile-pin-fields"><label className="form-label">{current?.profile?.pin_enabled?'Novo PIN (deixe vazio para manter)':'PIN opcional'}<input inputMode="numeric" autoComplete="new-password" type="password" maxLength={8} value={draft.pin} onChange={e=>setDraft((x:any)=>({...x,pin:e.target.value.replace(/\D/g,'')}))} placeholder="4 a 8 dígitos"/></label>{current?.profile?.pin_enabled&&draft.pin&&<label className="form-label">PIN atual<input inputMode="numeric" type="password" maxLength={8} value={draft.currentPin} onChange={e=>setDraft((x:any)=>({...x,currentPin:e.target.value.replace(/\D/g,'')}))}/></label>}</div><p className="security-note">O PIN é validado e armazenado pelo Nuvio. O painel não salva o PIN localmente.</p><div className="modal-actions"><button className="ghost" onClick={back}>Voltar</button><button className="primary" disabled={saving||!draft.name.trim()||Boolean(draft.pin&&draft.pin.length<4)||Boolean(current?.profile?.pin_enabled&&draft.pin&&!draft.currentPin)} onClick={saveProfile}>{saving?'Salvando…':'Salvar e sincronizar'}</button></div></>}
+  </div></div>
+}
+
+function Overview({p,counts,inv,live,onRename}:any){const cards=[['addons','Addons'],['plugins','Plugins'],['collections','Coleções'],['progress','Progresso'],['library','Biblioteca'],['watched','Assistidos']];const avatar=getProfileAvatarUrl(p.profile,inv.avatarCatalog);return <div className="stack"><div className="metric-grid">{cards.map(([k,l])=><div className="metric" key={k}><span>{l}</span><strong>{counts[k]}</strong><small>neste perfil</small></div>)}</div><div className="two-col"><div className="panel"><div className="panel-head"><div><h2>Perfil atual</h2><p>Dados da conta recuperados pela API em nuvem.</p></div><span className={'status-pill '+(live?'ok':'')}>{live?'SINCRONIZADO':'SNAPSHOT'}</span></div><div className="profile-summary"><div className="avatar">{avatar?<img src={avatar} alt=""/>:(p.profile?.name||'P').slice(0,1).toUpperCase()}</div><div><h3>{p.profile?.name||'Perfil sem nome'}</h3><div className="muted">Índice {p.profile?.profile_index??p.profile?.id??'—'}</div></div><button className="ghost small-action" disabled={!live} onClick={onRename}>Editar perfil</button></div></div><div className="panel"><div className="panel-head"><div><h2>Inventário</h2><p>Última leitura desta sessão.</p></div></div><div className="inventory-meta"><div><span>Atualizado</span><b>{new Date(inv.fetchedAt).toLocaleString('pt-BR')}</b></div><div><span>Perfis</span><b>{inv.profiles.length}</b></div><div><span>Catálogos</span><b>{p.catalogSettings?.items?.length||'—'}</b></div></div></div></div></div>}
+
+function OrderInput({value,max,disabled,onCommit}:{value:number;max:number;disabled?:boolean;onCommit:(value:number)=>void}){const [draft,setDraft]=useState(String(value+1));useEffect(()=>setDraft(String(value+1)),[value]);function commit(){const parsed=Number(draft);const next=Number.isFinite(parsed)?Math.min(max,Math.max(1,Math.round(parsed))):value+1;setDraft(String(next));if(next!==value+1)onCommit(next-1)}return <input className="order-input" aria-label="Posição na ordem" type="number" inputMode="numeric" min={1} max={Math.max(1,max)} value={draft} disabled={disabled} onChange={e=>setDraft(e.target.value)} onBlur={commit} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur()}} />}
+function moveRowTo<T>(rows:T[],from:number,to:number):T[]{const next=[...rows];if(from<0||from>=next.length)return next;const [item]=next.splice(from,1);next.splice(Math.max(0,Math.min(to,next.length)),0,item);return next}function AddonPage({profile,rows,diag,loading,diagnose,q,setQ,selected,setSelected,update,onAdd,onEdit,token,lastSync}:any){const [failed,setFailed]=useState(false);const filtered=useMemo(()=>rows.filter((x:Addon)=>{const d=diag[x.url||''];return JSON.stringify(x).toLowerCase().includes(q.toLowerCase())&&(!failed||d?.health==='fail')}),[rows,diag,q,failed]);const healthRows=Object.values(diag) as Health[];const healthy=healthRows.filter(x=>x.health==='healthy').length,attention=healthRows.filter(x=>x.health==='attention').length,failedCount=healthRows.filter(x=>x.health==='fail').length;function remove(item:Addon){if(!confirm(`Remover o addon "${item.name||item.display_name||item.url}"?`))return;update(rows.filter((x:Addon)=>!sameAddon(x,item)).map((x:Addon,i:number)=>({...x,sort_order:i})))}function move(item:Addon,to:number){const i=rows.findIndex((x:Addon)=>sameAddon(x,item));update(moveRowTo<Addon>(rows,i,to).map((x:Addon,n)=>({...x,sort_order:n})))}return <div className="stack"><div className="toolbar"><div className="search-wrap">⌕<input placeholder="Buscar addon…" value={q} onChange={e=>setQ(e.target.value)}/></div><button className="ghost" onClick={()=>setFailed(!failed)}>{failed?'Mostrar todos':'Somente falhos'}</button><button className="ghost" onClick={onAdd} disabled={!token}>Adicionar</button><button className="primary" disabled={loading} onClick={diagnose}>{loading?'Diagnosticando…':'Diagnosticar addons'}</button></div>{loading&&<div className="diag-strip"><span className="amber-dot"></span>{healthRows.length} de {rows.filter((x:Addon)=>x.url).length} addons responderam; diagnósticos parciais já estão disponíveis.</div>}{healthRows.length>0&&<div className="diag-strip"><span><i className="green-dot"></i>{healthy} saudáveis</span><span><i className="amber-dot"></i>{attention} atenção</span><span><i className="red-dot"></i>{failedCount} falhas</span><span className="muted">manifesto + catálogos testáveis</span></div>}<div className="panel table-panel"><div className="table-scroll mobile-card-table addon-card-table"><table><thead><tr><th>Addon</th><th>Catálogos</th><th>Estado</th><th>Diagnóstico</th><th>Ordem</th><th></th></tr></thead><tbody>{filtered.map((x:Addon,i:number)=>{const d=diag[x.url||''];const c=Array.isArray(d?.manifest?.catalogs)?d.manifest.catalogs.length:0;return <tr key={x.id||x.url||i} onClick={()=>setSelected(x)}><td data-label="Addon"><div className="item-name">{x.name||x.display_name||d?.manifest?.name||'Sem nome'}</div><div className="item-sub">{x.url||'URL não informada'}</div></td><td data-label="Catálogos"><span className="number-chip">{c||'—'}</span></td><td data-label="Estado"><span className={'status-text '+(x.enabled===false?'off':'on')}><i></i>{x.enabled===false?'Desativado':'Ativo'}</span></td><td data-label="Diagnóstico"><HealthCell d={d}/></td><td data-label="Ordem"><OrderInput value={x.sort_order??i} max={rows.length} disabled={!token} onCommit={(to)=>move(x,to)}/></td><td data-label="Ações"><div className="row-actions"><button className="row-action" onClick={e=>{e.stopPropagation();onEdit(x)}}>Editar</button><button className="row-action danger" onClick={e=>{e.stopPropagation();remove(x)}}>Remover</button></div></td></tr>})}</tbody></table></div>{!filtered.length&&<div className="empty">Nenhum addon encontrado.</div>}</div>{selected&&<AddonDrawer item={selected} diag={diag[selected.url||'']} close={()=>setSelected(null)} update={update} rows={rows} token={token} profile={profile} lastSync={lastSync}/>}</div>}
+function HealthCell({d}:{d?:Health}){if(!d)return <span className="muted">Não testado</span>;if(d.phase==='manifest'||d.phase==='catalog')return <span className="attention">◌ Verificando catálogos… <small>{d.summary?.tested||0}/{d.summary?.catalogs||0}</small></span>;const label=d.health==='healthy'?'Manifesto OK':d.health==='attention'?'Parcial':d.health==='fail'?'Manifesto indisponível':'Não verificado';const reason=d.healthReason||d.error;return <span title={reason||''} className={d.health==='fail'?'bad':d.health==='attention'?'attention':'ok'}>{d.health==='healthy'?'✓':d.health==='attention'?'!':d.health==='fail'?'✕':'?'} {label} <small>{d.latencyMs?`${d.latencyMs}ms`:''}</small>{reason&&<small className="health-reason"> · {reason}</small>}</span>}
+function AddonDrawer({item,diag,close,update,rows,token,profile,lastSync}:any){const catalogs=flattenManifestCatalogs(item,diag?.manifest||{});const home=catalogs.filter((c:any)=>!c.searchOnly&&!c.isCollection);const search=catalogs.filter((c:any)=>!c.isCollection&&(c.searchCapable||c.searchOnly));const settings=catalogSettingsForManifests(profile?.catalogSettings,catalogs);const byKey=new Map(settings.items.map(x=>[catalogCloudKey(x.addon_id,x.type,x.catalog_id).toLowerCase(),x]));const configured=home.filter((c:any)=>{const type=String(c.type||c.apiType||'').toLowerCase(),id=String(c.id||'').toLowerCase();const matches=(x:any)=>String(x.type||'').toLowerCase()===type&&String(x.catalog_id||x.catalogId||'').toLowerCase()===id;const aliasMatches=(x:any)=>{const saved=String(x.addon_id||x.addonId||'').trim().toLowerCase();return saved===String(c.addonId).toLowerCase()||addonKey(saved)===addonKey(c.addonUrl||'')};if((profile?.catalogSettings?.items||[]).some((x:any)=>matches(x)&&aliasMatches(x)))return true;const collisions=home.filter((other:any)=>String(other.type||other.apiType||'').toLowerCase()===type&&String(other.id||'').toLowerCase()===id);return collisions.length===1&&(profile?.catalogSettings?.items||[]).some((x:any)=>matches(x))});const active=configured.filter((c:any)=>byKey.get(c.cloudKey.toLowerCase())?.enabled===true).length;function toggle(){update(rows.map((x:Addon)=>sameAddon(x,item)?{...x,enabled:x.enabled===false}:x));}const manifestStatus=diag?.manifest?`Disponível${diag.latencyMs?` · ${diag.latencyMs} ms`:''}`:diag?.phase==='manifest'?'Verificando…':'Indisponível ou não testado';const change=diag?.manifestChange;return <Drawer title={item.name||item.display_name||diag?.manifest?.name||'Addon'} close={close}><div className="detail-cards"><div><span>Addon</span><b>{item.enabled===false?'Desativado':'Ativo'}</b></div><div><span>Manifesto</span><b>{manifestStatus}</b></div><div><span>Catálogos</span><b>{catalogs.length} · {home.length} Home · {search.length} Busca</b></div><div><span>Estado da conta</span><b>{configured.length} configurados · {active} ativos · {configured.length-active} desativados</b></div></div><div className="detail-cards"><div><span>Metadata</span><b>Não testado</b></div><div><span>Streams</span><b>Não testado</b></div><div><span>Cloud</span><b>{token?'Sessão ativa':'Snapshot'}</b></div><div><span>Última leitura</span><b>{lastSync?new Date(lastSync).toLocaleString('pt-BR'):'—'}</b></div></div>{change&&<div className="manifest-change"><b>Mudança do manifesto neste navegador</b><span>{change.state==='first'?'Primeira verificação (referência criada)':change.state==='changed'?`Alteração detectada${change.previousVersion||change.version?` · ${change.previousVersion||'sem versão'} → ${change.version||'sem versão'}`:''}`:change.state==='same'?`Sem mudanças desde ${change.observedAt?new Date(change.observedAt).toLocaleString('pt-BR'):'a verificação anterior'}`:'Não foi possível comparar'}</span></div>}<div className="drawer-actions"><button className="ghost" disabled={!token} onClick={toggle}>{item.enabled===false?'Ativar addon':'Desativar addon'}</button></div><p className="muted">Streams e Metadata não são solicitados pelo diagnóstico atual. Catálogos com parâmetros obrigatórios também podem ficar como não verificáveis. A comparação de manifesto é local a este navegador.</p><h3>Testes de catálogo</h3>{diag?.catalogTests?.length?<div className="catalog-test-list">{diag.catalogTests.map((test:any,i:number)=><div key={`${test.id||test.catalogId||i}`}><b>{test.name||test.id||test.catalogId||`Catálogo ${i+1}`}</b><span className={test.pending?'attention':test.testable===false?'muted':test.ok?'ok':'bad'}>{test.pending?'Verificando…':test.testable===false?'Não verificável':test.ok?'Disponível':'Falhou'}{test.latencyMs?` · ${test.latencyMs} ms`:''}</span>{(test.error||test.reason)&&<small>{test.error||test.reason}</small>}</div>)}</div>:<p className="muted">Ainda não há testes de catálogo.</p>}<details className="manifest-raw"><summary>Dados técnicos completos</summary><pre>{JSON.stringify({manifest:diag?.manifest,health:diag?.health,healthReason:diag?.healthReason,catalogTests:diag?.catalogTests?.map(({url,...test}:any)=>test),summary:diag?.summary},null,2)}</pre></details></Drawer>}
+
+function CatalogPage({profile,diag,diagLoading,diagProgress,q,setQ,token,saving,dirty,onChange,onRefresh}:any){
+  const catalogs=allCatalogs(diag,profile.addons)
+  const settings=catalogSettingsForManifests(profile.catalogSettings,catalogs)
+  const [scope,setScope]=useState<'home'|'search'>('home')
+  const [bulkAddon,setBulkAddon]=useState('')
+  const homeCatalogs=catalogs.filter((c:any)=>!c.searchOnly && !c.isCollection)
+  const searchCatalogs=catalogs.filter((c:any)=>!c.isCollection && (c.searchCapable || c.searchOnly))
+  const addonOptions=Array.from(new Map(homeCatalogs.map((c:any)=>[addonKey(c.addonUrl||''),{key:addonKey(c.addonUrl||''),name:c.addonName,url:c.addonUrl}])).values())
+  const filtered=(scope==='home'?homeCatalogs:searchCatalogs).filter((c:any)=>`${c.addonName} ${c.name} ${c.type} ${c.id}`.toLowerCase().includes(q.toLowerCase()))
+  const byKey=new Map(settings.items.map(x=>[catalogCloudKey(x.addon_id,x.type,x.catalog_id),x]))
+  const ordered=[...filtered].sort((a:any,b:any)=>{
+    if(scope==='search') return Number(a.order)-Number(b.order)
+    return (byKey.get(a.cloudKey)?.order??999999)-(byKey.get(b.cloudKey)?.order??999999)
+  })
+  function mutate(key:string,patch:any){onChange({...settings,items:settings.items.map(x=>catalogCloudKey(x.addon_id,x.type,x.catalog_id)===key?{...x,...patch}:x)})}
+  function setAddonCatalogsEnabled(enabled:boolean){const keys=new Set(homeCatalogs.filter((c:any)=>addonKey(c.addonUrl||'')===bulkAddon).map((c:any)=>c.cloudKey));if(!keys.size)return;onChange({...settings,items:settings.items.map(x=>keys.has(catalogCloudKey(x.addon_id,x.type,x.catalog_id))?{...x,enabled}:x)})}
+  function move(c:any,to:number){const items=[...settings.items].filter(x=>homeCatalogs.some((h:any)=>h.cloudKey===catalogCloudKey(x.addon_id,x.type,x.catalog_id))).sort((a,b)=>(a.order??0)-(b.order??0));const i=items.findIndex(x=>catalogCloudKey(x.addon_id,x.type,x.catalog_id)===c.cloudKey);const reordered=moveRowTo(items,i,to);const moved=new Map(reordered.map((x,n)=>[catalogCloudKey(x.addon_id,x.type,x.catalog_id),n]));onChange({...settings,items:settings.items.map(x=>moved.has(catalogCloudKey(x.addon_id,x.type,x.catalog_id))?{...x,order:moved.get(catalogCloudKey(x.addon_id,x.type,x.catalog_id))}:x)})}
+  const addonIsEnabled=(c:any)=>profile.addons.find((a:any)=>addonKey(a.url||'')===addonKey(c.addonUrl||''))?.enabled!==false
+  const activeHome=homeCatalogs.filter((c:any)=>addonIsEnabled(c)&&byKey.get(c.cloudKey)?.enabled===true).length
+  const configuredHome=homeCatalogs.filter((c:any)=>byKey.has(c.cloudKey)).length
+  const searchEnabled=searchCatalogs.filter((c:any)=>addonIsEnabled(c)).length
+  return <div className="stack catalog-management">
+    <div className="toolbar catalog-toolbar"><div className="search-wrap">⌕<input placeholder={scope==='home'?'Buscar catálogo do início…':'Buscar catálogo de busca…'} value={q} onChange={e=>setQ(e.target.value)}/></div><button className="ghost" disabled={diagLoading} onClick={onRefresh}>{diagLoading?'Atualizando…':'Atualizar addons'}</button>{diagLoading&&<span className="catalog-summary">Diagnóstico: {diagProgress.completed}/{diagProgress.total} addons respondidos; catálogos aparecem conforme chegam</span>}<span className="catalog-summary">{activeHome}/{homeCatalogs.length} no início · {searchEnabled}/{searchCatalogs.length} disponíveis para busca</span></div>
+    <div className="catalog-scope-tabs"><button className={scope==='home'?'active':''} onClick={()=>setScope('home')}>Início <span>{homeCatalogs.length}</span></button><button className={scope==='search'?'active':''} onClick={()=>setScope('search')}>Busca <span>{searchCatalogs.length}</span></button></div>
+    {scope==='home'&&<div className="toolbar catalog-bulk-actions"><label>Ações por addon<select className="toolbar-select" value={bulkAddon} onChange={e=>setBulkAddon(e.target.value)}><option value="">Selecione um addon…</option>{addonOptions.map((a:any)=><option key={a.key} value={a.key}>{a.name}</option>)}</select></label><button className="ghost" disabled={!token||!bulkAddon} onClick={()=>setAddonCatalogsEnabled(true)}>Ativar todos</button><button className="ghost" disabled={!token||!bulkAddon} onClick={()=>setAddonCatalogsEnabled(false)}>Desativar todos</button></div>}
+    <div className="panel"><div className="panel-head"><div><h2>{scope==='home'?'Catálogos da tela inicial':'Catálogos usados pela busca'}</h2><p>{scope==='home'?'Aqui aparece o que o Nuvio pode colocar na tela inicial. Catálogos novos entram desativados para você decidir manualmente.':'Aqui aparecem os catálogos consultáveis pela busca/Discover segundo o manifesto e o estado do addon.'}</p></div><span className={'status-pill '+(token&&!dirty?'ok':'')}>{!token?'Snapshot':dirty?'Pendente':'Sincronizado'}</span></div>
+      <div className="catalog-table"><div className="catalog-table-head"><span>Catálogo</span><span>Addon</span><span>Uso</span><span>Estado</span><span>Nome / origem</span><span>Ordem</span></div>
+      {ordered.map((c:any,i:number)=>{const key=c.cloudKey;const s=byKey.get(key)||{addon_id:c.addonId,type:c.type,catalog_id:c.id,enabled:false,order:i,custom_title:''};const addonEnabled=addonIsEnabled(c);const searchOn=addonEnabled;const position=settings.items.filter(x=>homeCatalogs.some((h:any)=>h.cloudKey===catalogCloudKey(x.addon_id,x.type,x.catalog_id))).sort((a,b)=>(a.order??0)-(b.order??0)).findIndex(x=>catalogCloudKey(x.addon_id,x.type,x.catalog_id)===key);return <div className={'catalog-line '+((scope==='home'&&(!addonEnabled||s.enabled===false))||(scope==='search'&&!searchOn)?'is-off':'')} key={key}>
+        <div className="catalog-main"><b>{s.custom_title||c.name||c.id}</b><small>{c.type} · {c.id}</small></div>
+        <div className="item-sub catalog-addon">{c.addonName}</div>
+        <div className="catalog-location"><span className="location-chip">{c.isCollection?'Coleção':c.searchOnly?'Busca exclusiva':c.searchCapable?'Início + Busca':'Somente início'}</span></div>
+        <div className="catalog-state">{scope==='home'?<><button className={s.enabled===false?'ghost tiny-btn':'primary tiny-btn'} disabled={!token||!addonEnabled} onClick={()=>mutate(key,{enabled:s.enabled===false})}>{!addonEnabled?'Addon desativado':s.enabled===false?'Ativar':'Desativar'}</button>{!byKey.has(key)&&<small className="muted block">Novo · ainda não configurado</small>}</>:<span className={searchOn?'ok':'muted'}>{!addonEnabled?'Addon desativado':searchOn?'Disponível para busca':'Indisponível'}</span>}</div>
+        <div className="catalog-custom">{scope==='home'?<details><summary>Personalizar nome</summary><input disabled={!token} value={s.custom_title||''} placeholder={c.name||c.id} onChange={e=>mutate(key,{custom_title:e.target.value})}/></details>:<span className="muted">{c.searchOnly?'Obrigatório para busca no manifesto':'Catálogo consultável pelo Nuvio'}</span>}</div>
+        <div className="row-actions catalog-order">{scope==='home'&&<OrderInput value={Math.max(0,position)} max={homeCatalogs.length} disabled={!token} onCommit={to=>move(c,to)}/>}</div>
+      </div>})}
+      {!ordered.length&&<div className="empty">Nenhum catálogo encontrado neste grupo.</div>}</div>
+      <div className="security-note">A classificação segue o manifesto: catálogos com <code>search</code> obrigatório são exclusivos da busca; os demais podem participar do Discover. O Nuvio Cloud não oferece uma configuração separada para ativar/desativar individualmente cada catálogo de busca, então esta lista é apenas informativa. A ativação e a ordem da tela inicial são sincronizadas na conta.</div>
+    </div></div>
+}
+
+function PluginPage({rows,q,setQ,selected,setSelected,update,token}:any){const filtered=rows.filter((x:any)=>JSON.stringify(x).toLowerCase().includes(q.toLowerCase()));function remove(item:any){if(!confirm(`Remover o plugin "${item.name||item.url||item.id}"?`))return;update(rows.filter((x:any)=>x!==item).map((x:any,i:number)=>({...x,sort_order:i})))}function move(item:any,to:number){const i=rows.indexOf(item);update(moveRowTo<any>(rows,i,to).map((x:any,i:number)=>({...x,sort_order:i})))}function add(){const url=prompt('URL/repositório do plugin:');if(url?.trim())update([...rows,{url:url.trim(),enabled:true,sort_order:rows.length}])}function edit(item:any){const name=prompt('Nome do plugin:',item.name||item.display_name||'');if(name!==null)update(rows.map((x:any)=>x===item?{...x,name}:x))}return <div className="stack"><div className="toolbar"><div><h2>Plugins <span className="count-badge">{rows.length}</span></h2><p>Repositórios associados ao perfil.</p></div><div className="search-wrap compact">⌕<input placeholder="Buscar…" value={q} onChange={e=>setQ(e.target.value)}/></div><button className="ghost" disabled={!token} onClick={add}>Adicionar</button></div><div className="panel table-panel management-list-panel"><div className="table-scroll mobile-card-table plugin-card-table"><table><thead><tr><th>Nome</th><th>Estado</th><th>Ordem</th><th></th></tr></thead><tbody>{filtered.map((x:any,i:number)=><tr key={x.id||x.url||i}><td data-label="Plugin"><div className="item-name">{x.name||x.title||x.display_name||`Plugin ${i+1}`}</div><div className="item-sub">{x.url||x.repository||x.id||''}</div></td><td data-label="Estado"><span className={'status-text '+(x.enabled===false?'off':'on')}><i></i>{x.enabled===false?'Desativado':'Ativo'}</span></td><td data-label="Ordem"><OrderInput value={x.sort_order??i} max={rows.length} disabled={!token} onCommit={(to)=>move(x,to)}/></td><td data-label="Ações"><div className="row-actions"><button className="row-action" onClick={()=>edit(x)}>Editar</button><button className="row-action danger" onClick={()=>remove(x)}>Remover</button></div></td></tr>)}</tbody></table></div>{!filtered.length&&<div className="empty">Nenhum plugin encontrado.</div>}</div></div>}
+
+function CollectionPage({rows,q,setQ,selected,setSelected,update,token,onAdd,onImport,onImportUrl,onEdit,onExport}:any){const filtered=rows.filter((x:any)=>JSON.stringify(x).toLowerCase().includes(q.toLowerCase()));function title(x:any,i:number){return x?.title||x?.name||x?.label||`Coleção ${i+1}`}function remove(x:any){if(!confirm(`Remover a coleção "${title(x,rows.indexOf(x))}"?`))return;update(rows.filter((v:any)=>v!==x))}function move(x:any,to:number){const i=rows.indexOf(x);update(moveRowTo(rows,i,to))}return <div className="stack"><div className="toolbar"><div><h2>Coleções <span className="count-badge">{rows.length}</span></h2><p>Editor visual de coleções, pastas e fontes.</p></div><div className="search-wrap compact">⌕<input placeholder="Buscar coleção…" value={q} onChange={e=>setQ(e.target.value)}/></div><button className="ghost" disabled={!token} onClick={onImport}>Importar JSON</button><button className="ghost" disabled={!token} onClick={onImportUrl}>Importar URL</button><button className="primary" disabled={!token} onClick={onAdd}>Nova coleção</button></div><div className="panel table-panel management-list-panel"><div className="table-scroll mobile-card-table collection-card-table"><table><thead><tr><th>Nome</th><th>Pastas</th><th>Fontes</th><th>Ordem</th><th></th></tr></thead><tbody>{filtered.map((x:any,i:number)=><tr key={x.id||i} onClick={()=>setSelected(x)}><td data-label="Coleção"><div className="item-name">{title(x,i)}</div><div className="item-sub">{x.id||''}</div></td><td data-label="Pastas"><span className="number-chip">{Array.isArray(x.folders)?x.folders.length:0}</span></td><td data-label="Fontes"><span className="number-chip">{collectionSourceCount(x)}</span></td><td data-label="Ordem"><OrderInput value={rows.indexOf(x)} max={rows.length} disabled={!token} onCommit={(to)=>move(x,to)}/></td><td data-label="Ações"><div className="row-actions"><button className="row-action" disabled={!token} onClick={e=>{e.stopPropagation();onEdit(x)}}>Editar</button><button className="row-action" onClick={e=>{e.stopPropagation();onExport(x)}}>Exportar</button><button className="row-action danger" disabled={!token} onClick={e=>{e.stopPropagation();remove(x)}}>Remover</button></div></td></tr>)}</tbody></table></div>{!filtered.length&&<div className="empty">Nenhuma coleção encontrada.</div>}</div>{selected&&<Drawer title={title(selected,rows.indexOf(selected))} close={()=>setSelected(null)}><div className="detail-cards"><div><span>Pastas</span><b>{selected.folders?.length||0}</b></div><div><span>Fontes</span><b>{collectionSourceCount(selected)}</b></div><div><span>Posição</span><b>{rows.indexOf(selected)+1}</b></div><div><span>Modo</span><b>{selected.viewMode||selected.view_mode||'—'}</b></div></div><div className="drawer-actions"><button className="primary" disabled={!token} onClick={()=>{onEdit(selected);setSelected(null)}}>Editar coleção</button></div><pre>{JSON.stringify(selected,null,2)}</pre></Drawer>}</div>}
+function collectionSourceCount(x:any){return (x?.folders||[]).reduce((n:number,f:any)=>n+(f?.sources?.length||f?.catalogSources?.length||0),0)}
+
+function CollectionEditor({value,close,save,catalogs}:any){
+  const [draft,setDraft]=useState<any>(()=>structuredClone(value))
+  function setFolder(i:number,patch:any){setDraft((d:any)=>({...d,folders:d.folders.map((f:any,n:number)=>n===i?{...f,...patch}:f)}))}
+  function addFolder(){setDraft((d:any)=>({...d,folders:[...(d.folders||[]),{id:`folder-${crypto.randomUUID()}`,title:'Nova pasta',coverEmoji:'🎬',tileShape:'LANDSCAPE',sources:[]}]}))}
+  function removeFolder(i:number){setDraft((d:any)=>({...d,folders:d.folders.filter((_:any,n:number)=>n!==i)}))}
+  function changeSources(folder:any,change:(sources:any[])=>any[]){const field=Array.isArray(folder.sources)?'sources':Array.isArray(folder.catalogSources)?'catalogSources':'sources';return {...folder,[field]:change(folder[field]||[])}}
+  function addSource(i:number){setDraft((d:any)=>({...d,folders:d.folders.map((f:any,n:number)=>n===i?changeSources(f,sources=>[...sources,{provider:'addon',addonId:'',type:'movie',catalogId:''}]):f)}))}
+  function updateSource(fi:number,si:number,key:string,val:string){setDraft((d:any)=>({...d,folders:d.folders.map((f:any,fn:number)=>fn===fi?changeSources(f,sources=>sources.map((s:any,sn:number)=>{if(sn!==si)return s;const next={...s,[key]:val};if(key==='addonId')delete next.addon_id;if(key==='catalogId')delete next.catalog_id;return next})):f)}))}
+  function removeSource(fi:number,si:number){setDraft((d:any)=>({...d,folders:d.folders.map((f:any,fn:number)=>fn===fi?changeSources(f,sources=>sources.filter((_:any,n:number)=>n!==si)):f)}))}
+  function chooseCatalog(fi:number,si:number,value:string){if(!value)return;const [addonId,type,catalogId]=JSON.parse(value);updateSource(fi,si,'addonId',addonId);updateSource(fi,si,'type',type);updateSource(fi,si,'catalogId',catalogId)}
+  function submit(){let invalid='';(draft.folders||[]).forEach((f:any,fi:number)=>{(f.sources||f.catalogSources||[]).forEach((s:any,si:number)=>{if((s.provider||'addon').toLowerCase()==='addon'&&(!(s.addonId||s.addon_id)||!s.type||!(s.catalogId||s.catalog_id)))invalid=`Preencha Addon ID, Tipo e Catalog ID na fonte ${si+1} da pasta ${fi+1}.`})});if(invalid){window.alert(invalid);return}save(draft)}
+  return <SimpleModal title="Editor de coleção" close={close}><div className="form-grid">
+    <label className="form-label">Nome<input value={draft.title||''} onChange={e=>setDraft({...draft,title:e.target.value})}/></label>
+    <div className="editor-list">{(draft.folders||[]).map((f:any,fi:number)=><div className="editor-block" key={f.id||fi}>
+      <div className="editor-block-head"><b>Pasta {fi+1}</b><button className="icon-btn tiny danger-btn" onClick={()=>removeFolder(fi)}>×</button></div>
+      <label className="form-label">Título<input value={f.title||''} onChange={e=>setFolder(fi,{title:e.target.value})}/></label>
+      <div className="source-list">{(f.sources||f.catalogSources||[]).map((s:any,si:number)=><div className="editor-block" key={si}>
+        {(s.provider||'addon').toLowerCase()==='addon'?<>
+          <div className="source-row"><select value="" onChange={e=>chooseCatalog(fi,si,e.target.value)}><option value="">Sugestões do manifesto (opcional)</option>{catalogs.map((c:any)=><option key={c.cloudKey} value={JSON.stringify([c.addonId,c.type,c.id])}>{c.addonName} · {c.name||c.id} ({c.type})</option>)}</select><button className="icon-btn tiny danger-btn" onClick={()=>removeSource(fi,si)}>×</button></div>
+          <div className="source-meta-grid"><label className="form-label">Addon ID<input value={s.addonId||s.addon_id||''} onChange={e=>updateSource(fi,si,'addonId',e.target.value)} placeholder="ID do manifesto"/></label><label className="form-label">Tipo<input value={s.type||''} onChange={e=>updateSource(fi,si,'type',e.target.value)} placeholder="movie, series…"/></label><label className="form-label">Catalog ID<input value={s.catalogId||s.catalog_id||''} onChange={e=>updateSource(fi,si,'catalogId',e.target.value)} placeholder="ID mesmo se não estiver no manifesto"/></label><label className="form-label">Título nesta coleção<input value={s.title||''} onChange={e=>updateSource(fi,si,'title',e.target.value)} placeholder="Opcional"/></label></div>
+        </>:<div className="source-row"><span className="muted">Fonte {s.provider||'externa'} preservada</span><button className="icon-btn tiny danger-btn" onClick={()=>removeSource(fi,si)}>×</button></div>}
+      </div>)}</div>
+      <button className="ghost tiny-btn" onClick={()=>addSource(fi)}>+ Fonte de catálogo</button>
+    </div>)}</div>
+    <button className="ghost" onClick={addFolder}>+ Adicionar pasta</button>
+    <div className="modal-actions"><button className="ghost" onClick={close}>Cancelar</button><button className="primary" onClick={submit}>Salvar localmente</button></div>
+  </div></SimpleModal>
+}
+
+
+function CollectionUrlModal({close,onImport}:any){const [url,setUrl]=useState('');const [busy,setBusy]=useState(false);async function go(){setBusy(true);try{const r=await fetch('/api/import-url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Falha');onImport(d.data)}catch(e:any){alert(e.message||'Falha')}finally{setBusy(false)}}return <SimpleModal title="Importar coleções por URL" close={close}><label className="form-label">URL do JSON<input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://.../collections.json" /></label><p className="security-note">A URL é buscada pelo painel e deve retornar JSON de coleções Nuvio.</p><div className="modal-actions"><button className="ghost" onClick={close}>Cancelar</button><button className="primary" disabled={!url||busy} onClick={go}>{busy?'Importando…':'Importar'}</button></div></SimpleModal>}
+
+function WatchPage({rows,history,addons}:any){
+  const [q,setQ]=useState(''); const [filter,setFilter]=useState('unfinished'); const [group,setGroup]=useState(true); const [selected,setSelected]=useState<any|null>(null); const [resolving,setResolving]=useState(false)
+  const [records,setRecords]=useState<any[]>(()=>normalizeWatch(rows,history))
+  useEffect(()=>{setRecords(normalizeWatch(rows,history))},[rows,history])
+  async function resolveTitles(){
+    const missing=records.filter(x=>!x.title||x.title==='Sem título').slice(0,60); if(!missing.length)return
+    setResolving(true)
+    try{const r=await fetch('/api/nuvio/resolve-watch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({addons,items:missing.map(x=>({key:x.key,contentId:x.contentId,type:x.type}))})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Falha ao buscar metadados');if(Array.isArray(d.resolved)&&d.resolved.length){const by=new Map<string,any>(d.resolved.map((x:any)=>[String(x.key),x] as [string,any]));setRecords(prev=>prev.map(x=>{const hit=by.get(x.key);return hit?{...x,...hit,title:hit.title||x.title}:x}))}else alert('Nenhum título adicional foi encontrado nos addons de metadados.') }catch(e:any){alert(e.message||'Falha ao resolver títulos')}finally{setResolving(false)}
+  }
+  const filtered=records.filter((x:any)=>{const title=String(x.title||'Sem título').toLowerCase();const match=title.includes(q.toLowerCase())||x.key.toLowerCase().includes(q.toLowerCase());const state=filter==='all'||(filter==='unfinished'&&!x.finished)||(filter==='finished'&&x.finished);return match&&state})
+  const groups:any[][]=group?Object.values(filtered.reduce((m:any,x:any)=>{const k=x.seriesKey||x.key;(m[k]??=[]).push(x);return m},{})) as any[][]:filtered.map((x:any)=>[x])
+  return <div className="stack"><div className="toolbar"><div><h2>Progresso <span className="count-badge">{records.length}</span></h2><p>Continue assistindo, histórico e episódios agrupados.</p></div><div className="search-wrap compact">⌕<input placeholder="Filtrar título…" value={q} onChange={e=>setQ(e.target.value)}/></div><select className="toolbar-select" value={filter} onChange={e=>setFilter(e.target.value)}><option value="unfinished">Em andamento</option><option value="finished">Já assistidos</option><option value="all">Todos</option></select><button className={group?'primary':'ghost'} onClick={()=>setGroup(!group)}>{group?'Agrupado':'Separado'}</button><button className="ghost" disabled={resolving} onClick={resolveTitles}>{resolving?'Buscando títulos…':'Corrigir títulos'}</button></div>
+    <div className="watch-summary"><span>{records.filter((x:any)=>!x.finished).length} em andamento</span><span>{records.filter((x:any)=>x.finished).length} assistidos</span><span>{new Set(records.map((x:any)=>x.seriesKey||x.key)).size} grupos</span></div>
+    <div className="watch-groups">{groups.map((g:any[],i:number)=><div className="panel watch-group" key={i}><div className="watch-group-head"><div><h3>{g[0].seriesTitle||g[0].title||'Sem título'}</h3><span>{g.length>1?`${g.length} episódios`:g[0].type==='series'?'Série':'Filme'}</span></div><span className="number-chip">{g.filter(x=>!x.finished).length} pendentes</span></div>{g.map((x:any)=><WatchCard item={x} key={x.key} onOpen={()=>setSelected(x)}/>)}</div>)}{!groups.length&&<div className="panel empty">Nenhum item corresponde ao filtro.</div>}</div>
+    {selected&&<Drawer title={selected.title||'Detalhes do item'} close={()=>setSelected(null)}><div className="detail-cards"><div><span>Estado</span><b>{selected.finished?'Assistido':'Em andamento'}</b></div><div><span>Tipo</span><b>{selected.type||'—'}</b></div><div><span>Temporada</span><b>{selected.season??'—'}</b></div><div><span>Episódio</span><b>{selected.episode??'—'}</b></div><div><span>Progresso</span><b>{selected.pct?`${Math.round(selected.pct)}%`:'—'}</b></div><div><span>Última atividade</span><b>{selected.lastWatched?new Date(Number(selected.lastWatched)).toLocaleString('pt-BR'):'—'}</b></div></div><p className="security-note">O Watch Progress sincronizado registra posição, duração, episódio e identificadores. A fonte/servidor exato do stream não é mantido nesse registro, então o painel não consegue recuperar por qual addon/servidor você assistiu.</p><details><summary>Dados técnicos</summary><pre>{JSON.stringify(selected,null,2)}</pre></details></Drawer>}
+  </div>
+}
+function normalizeWatch(rows:any[],history:any[]){
+  const all=[...rows.map(x=>({...x,__source:'progress'})),...history.map(x=>({...x,__source:'history'}))]
+  const historyKeys=new Set<string>(); for(const x of all.filter(x=>x.__source==='history')) historyKeys.add(watchIdentity(x))
+  const map=new Map<string,any>()
+  for(const x of all){
+    const title=mediaTitle(x); const season=getField(x,['season','season_number','seasonNumber'],null); const episode=getField(x,['episode','episode_number','episodeNumber'],null); const contentId=String(getField(x,['content_id','contentId','parentContentId','id','video_id','videoId'],'')).trim(); const key=contentId||`${title}|${season||''}|${episode||''}`; const watched=Number(getField(x,['position','progress','playback_position'],0)||0); const duration=Number(getField(x,['duration','runtime','total','video_duration'],0)||0); const pct=duration>0?Math.min(100,watched/duration*100):Number(getField(x,['percent','progress_percent','progressPercent'],0)||0); const finished=x.__source==='history'||Boolean(x.finished||x.completed||pct>=95||x.watched===true)||historyKeys.has(watchIdentity(x)); const seriesTitle=getField(x,['series_title','seriesName','show_title','parentTitle'],null)||((season!=null||episode!=null)?title:null); const seriesIds=[x?.series_id,x?.seriesId,x?.show_id,x?.showId,x?.parentContentId]; const seriesId=seriesIds.find(v=>v!==undefined&&v!==null&&String(v).trim()); const sk=seriesId?`id:${String(seriesId).toLowerCase()}`:`title:${String(seriesTitle||title).trim().toLowerCase()}`; const old=map.get(key); const candidate={...x,key,title,contentId,seriesKey:sk,seriesTitle,season,episode,pct,finished,type:(season!=null||episode!=null)?'series':mediaType(x),poster:getField(x,['poster','poster_url','posterUrl'],null)||x?.meta?.poster,lastWatched:getField(x,['lastWatched','last_watched','updated_at','updatedAt'],null),position:watched,duration}
+    if(!old||Number(candidate.pct)>Number(old.pct)||candidate.finished&&!old.finished)map.set(key,candidate)
+  }
+  return Array.from(map.values()).sort((a,b)=>Number(b.lastWatched||0)-Number(a.lastWatched||0)||Number(b.pct)-Number(a.pct))
+}
+function watchIdentity(x:any){return String(getField(x,['content_id','contentId','parentContentId','id','video_id','videoId'],mediaTitle(x))).toLowerCase()}
+function WatchCard({item,onOpen}:any){return <button className="watch-card watch-card-button" onClick={onOpen}>{item.poster?<img src={item.poster} alt=""/>:<div className="poster-fallback">▶</div>}<div className="watch-body"><b>{item.title||'Sem título'}</b><span>{item.seriesTitle&&item.seriesTitle!==item.title?`${item.seriesTitle} · `:''}{item.season!=null?`T${item.season}`:''}{item.episode!=null?` · E${item.episode}`:''}</span><div className="progress-track"><i style={{width:`${Math.round(item.pct||0)}%`}}></i></div><small>{item.finished?'Assistido':item.pct?`${Math.round(item.pct)}% assistido`:'Progresso não informado'} · Toque para detalhes</small></div></button>}
+
+function LibraryPage({rows,token,profile,onUpdate}:any){const [q,setQ]=useState('');const [source,setSource]=useState<'nuvio'|'trakt'>('nuvio');const [trakt,setTrakt]=useState<any[]>([]);const [clientId,setClientId]=useState('');const [accessToken,setAccessToken]=useState('');const [busy,setBusy]=useState(false);const filtered=rows.filter((x:any)=>mediaTitle(x).toLowerCase().includes(q.toLowerCase()));async function loadTrakt(){if(!clientId||!accessToken){alert('Informe Client ID e Access Token do Trakt.');return}setBusy(true);try{const r=await fetch('/api/trakt/collection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId,accessToken})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Trakt recusou a consulta.');setTrakt([...(d.movies||[]).map((x:any)=>({...x,media_type:'movie',title:x.movie?.title,poster:x.movie?.images?.poster?.[0]})),...(d.shows||[]).map((x:any)=>({...x,media_type:'show',title:x.show?.title,poster:x.show?.images?.poster?.[0]}))]);setSource('trakt')}catch(e:any){alert(e.message||'Falha no Trakt')}finally{setBusy(false)}} async function pushTrakt(){if(!clientId||!accessToken){alert('Informe Client ID e Access Token do Trakt.');return}setBusy(true);try{const r=await fetch('/api/trakt/sync-collection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId,accessToken,items:rows})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Falha ao enviar para Trakt');alert(`Trakt recebeu ${d.sent||0} item(ns). Itens sem ID reconhecível foram ignorados.`)}catch(e:any){alert(e.message||'Falha no Trakt')}finally{setBusy(false)}}return <div className="stack"><div className="toolbar"><div><h2>Biblioteca <span className="count-badge">{rows.length}</span></h2><p>Biblioteca Nuvio com visualização opcional da coleção do Trakt.</p></div><div className="search-wrap compact">⌕<input placeholder="Buscar título…" value={q} onChange={e=>setQ(e.target.value)}/></div><button className={source==='nuvio'?'primary':'ghost'} onClick={()=>setSource('nuvio')}>Nuvio</button><button className={source==='trakt'?'primary':'ghost'} onClick={()=>setSource('trakt')}>Trakt</button></div><div className="panel trakt-panel"><div><b>Trakt</b><span> Consulta direta da sua collection. Tokens ficam somente no navegador.</span></div><input placeholder="Client ID" value={clientId} onChange={e=>setClientId(e.target.value)}/><input placeholder="Access Token" type="password" value={accessToken} onChange={e=>setAccessToken(e.target.value)}/><button className="ghost" disabled={busy} onClick={loadTrakt}>{busy?'Consultando…':'Consultar Trakt'}</button><button className="primary" disabled={busy||!rows.length} onClick={pushTrakt}>Nuvio → Trakt</button></div>{source==='trakt'?<div className="library-grid">{trakt.filter(x=>String(x.title||'').toLowerCase().includes(q.toLowerCase())).map((x:any,i:number)=><div className="library-card" key={i}>{x.poster?<img src={x.poster} alt=""/>:<div className="poster-fallback">TV</div>}<div><b>{x.title}</b><small>Trakt · {x.media_type}</small></div></div>)}</div>:<div className="library-grid">{filtered.slice(0,400).map((x:any,i:number)=><div className="library-card" key={i}><div className="poster-fallback">LIB</div><div><b>{mediaTitle(x)}</b><small>{mediaType(x)}</small></div></div>)}</div>}</div>}
+
+function AddonEditor({modal,existing=[],close,save}:any){
+  const initial=modal.item||{url:'',name:'',enabled:true};const [mode,setMode]=useState<'single'|'batch'>('single');const [url,setUrl]=useState(initial.url||'');const [name,setName]=useState(initial.name||initial.display_name||'');const [enabled,setEnabled]=useState(initial.enabled!==false);const [list,setList]=useState('');const [results,setResults]=useState<any[]>([]);const [busy,setBusy]=useState(false);const [batchActive,setBatchActive]=useState(false);const batchActiveRef=useRef(false)
+  async function preview(rawUrls:string[]){const unique=Array.from(new Set(rawUrls.map(x=>{try{return addonUrl(x.trim())}catch{return x.trim()}}).filter(Boolean))).filter(x=>!existing.some((a:any)=>addonKey(a.url||'')===addonKey(x)));if(!unique.length)return;setBusy(true);setResults(unique.map(url=>({url,pending:true,enabled,activeCatalogKeys:[]})));let cursor=0;const workers=Array.from({length:Math.min(4,unique.length)},async()=>{while(cursor<unique.length){const i=cursor++;const target=unique[i];try{const res=await fetch('/api/nuvio/addon-preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({urls:[target]})});const data=await res.json();const result=data.results?.[0]||{url:target,ok:false,error:data.error||'Falha ao consultar manifesto.'};setResults(prev=>prev.map(x=>x.url===target?{...result,pending:false,enabled,activeCatalogKeys:batchActiveRef.current?(result.manifest?.catalogs||[]).filter((c:any)=>!c.searchOnly&&!c.search_only).map((c:any)=>catalogCloudKey(String(result.manifest?.id||target),String(c.type||c.apiType||''),String(c.id||''))):[]}:x))}catch(error:any){setResults(prev=>prev.map(x=>x.url===target?{url:target,pending:false,ok:false,error:error?.message||'Falha de rede',enabled,activeCatalogKeys:[]}:x))}}});await Promise.all(workers);setBusy(false)}
+  function setAllCatalogs(active:boolean){batchActiveRef.current=active;setBatchActive(active);setResults(prev=>prev.map(entry=>({...entry,activeCatalogKeys:active?(entry.manifest?.catalogs||[]).filter((c:any)=>!c.searchOnly&&!c.search_only).map((c:any)=>catalogCloudKey(String(entry.manifest?.id||entry.url),String(c.type||c.apiType||''),String(c.id||''))):[]})))}
+  function toggleCatalog(entry:any,c:any,checked:boolean){const key=catalogCloudKey(String(entry.manifest?.id||entry.url),String(c.type||c.apiType||''),String(c.id||''));setResults(prev=>prev.map(x=>x.url===entry.url?{...x,activeCatalogKeys:checked?Array.from(new Set([...x.activeCatalogKeys,key])):x.activeCatalogKeys.filter((k:string)=>k!==key)}:x))}
+  function submit(e:React.FormEvent){e.preventDefault();if(modal.mode==='edit'){if(url.trim())save({url:addonUrl(url),name:name.trim(),enabled});return}if(!results.length){preview(mode==='single'?[url]:list.split(/[\n,;]+/).map(x=>x.trim()).filter(Boolean));return}const valid=results.filter(x=>x.ok&&x.manifest);if(valid.length)save({items:valid.map(entry=>({addon:{url:entry.url,name:entry.manifest.name||'',enabled:entry.enabled!==false},manifest:entry.manifest,activeCatalogKeys:entry.activeCatalogKeys}))})}
+  const catalogs=(entry:any)=>(entry.manifest?.catalogs||[]).filter((c:any)=>!c.searchOnly&&!c.search_only)
+  return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal addon-editor-modal"><div className="modal-head"><div><div className="eyebrow">EXTENSÕES</div><h2>{modal.mode==='add'?'Adicionar addons':'Editar addon'}</h2></div><button className="icon-btn" onClick={close}>×</button></div>{modal.mode==='edit'?<form onSubmit={submit} className="form-grid"><label className="form-label">URL do manifesto<input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://…" required/></label><label className="form-label">Nome personalizado<input value={name} onChange={e=>setName(e.target.value)} placeholder="Opcional"/></label><label className="check-line"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/> Ativo</label><div className="modal-actions"><button type="button" className="ghost" onClick={close}>Cancelar</button><button className="primary">Salvar</button></div></form>:<form onSubmit={submit} className="form-grid"><div className="addon-mode-tabs"><button type="button" className={mode==='single'?'active':''} onClick={()=>{setMode('single');setResults([])}}>Um addon</button><button type="button" className={mode==='batch'?'active':''} onClick={()=>{setMode('batch');setResults([])}}>Lista de addons</button></div>{mode==='single'?<label className="form-label">URL do manifesto<input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://…" required/></label>:<label className="form-label">Cole os links, um por linha<textarea rows={4} value={list} onChange={e=>setList(e.target.value)} placeholder="https://addon-um/manifest.json&#10;https://addon-dois/manifest.json" required/></label>}{!results.length&&<><label className="check-line"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/> Adicionar addon(s) ativo(s)</label><div className="modal-actions"><button type="button" className="ghost" onClick={close}>Cancelar</button><button className="primary" disabled={busy}>{busy?'Consultando…':'Consultar manifestos'}</button></div></>}{results.length>0&&<><div className="batch-catalog-controls"><b>Prévia · {results.filter(x=>x.ok).length} de {results.length} manifestos disponíveis</b><div><button type="button" className="ghost" onClick={()=>setAllCatalogs(true)}>Ativar todos os catálogos</button><button type="button" className="ghost" onClick={()=>setAllCatalogs(false)}>Desativar todos</button></div></div><label className="check-line"><input type="checkbox" checked={results.every(x=>x.enabled!==false)} onChange={e=>setResults(prev=>prev.map(x=>({...x,enabled:e.target.checked})))}/> Adicionar addons ativos</label><div className="batch-preview-list">{results.map((entry:any)=>{const home=catalogs(entry);return <section className="batch-preview-item" key={entry.url}><header><div><b>{entry.manifest?.name||entry.url}</b><small>{entry.manifest?`${entry.manifest.version||'Versão não informada'} · ${home.length} catálogos · ${entry.latencyMs} ms`:entry.error||'Consultando manifesto…'}</small></div><label className="check-line"><input type="checkbox" checked={entry.enabled!==false} disabled={!entry.ok} onChange={e=>setResults(prev=>prev.map(x=>x.url===entry.url?{...x,enabled:e.target.checked}:x))}/> Ativo</label></header>{entry.manifest?.description&&<p>{entry.manifest.description}</p>}{home.length>0&&<div className="batch-catalog-list">{home.map((c:any,i:number)=>{const key=catalogCloudKey(String(entry.manifest.id||entry.url),String(c.type||c.apiType||''),String(c.id||''));return <label key={`${key}-${i}`}><input type="checkbox" checked={entry.activeCatalogKeys.includes(key)} onChange={e=>toggleCatalog(entry,c,e.target.checked)}/><span>{c.name||c.id}</span><small>{c.type||c.apiType} · {c.id}</small></label>})}</div>}</section>})}</div><div className="modal-actions"><button type="button" className="ghost" onClick={()=>setResults([])}>Voltar</button><button type="button" className="ghost" onClick={close}>Cancelar</button><button className="primary" disabled={busy||!results.some(x=>x.ok)}>{busy?'Aguardando manifestos…':`Adicionar ${results.filter(x=>x.ok).length} addon(s)`}</button></div></>}</form>}</div></div>
+}
+
+function TransferModal({source,sourceLabel,close,exportPackage,onImportFile}:any){
+  const [parts,setParts]=useState({addons:true,plugins:true,collections:true,catalogs:true,library:false,watchProgress:false,watchedItems:false})
+  const toggle=(k:string)=>setParts((p:any)=>({...p,[k]:!p[k]}))
+  return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal transfer-modal">
+    <div className="modal-head"><div><div className="eyebrow">TRANSFERÊNCIA</div><h2>Pacotes de configuração</h2></div><button className="icon-btn" onClick={close}>×</button></div>
+    <p className="muted">Agora você não precisa conectar a conta de origem. Exporte um pacote, leve o arquivo para outro dispositivo/conta e importe somente o que quiser.</p>
+    <div className="transfer-section"><h3>1. Criar pacote deste perfil</h3><div className="transfer-checks">{Object.entries(parts).map(([k,v])=><label key={k} className="check-line"><input type="checkbox" checked={v} onChange={()=>toggle(k)}/>{labelPart(k)}</label>)}</div><div className="security-note">O pacote remove senha e tokens. Addons são exportados apenas com URL, nome, estado e ordem, evitando levar APIs salvas em campos extras.</div><button className="primary full" onClick={()=>exportPackage(parts)}>Exportar pacote selecionado</button></div>
+    <div className="transfer-divider"><span>ou</span></div>
+    <div className="transfer-section"><h3>2. Importar pacote em uma conta conectada</h3><p className="muted">A conta atual será o destino. Depois você escolhe perfil, partes e se deseja mesclar ou substituir cada seção.</p><button className="ghost full" onClick={onImportFile}>Selecionar pacote JSON</button></div>
+  </div></div>
+}
+function TransferImportModal({pkg,close,onApply,saving}:any){
+  const available=Object.keys(pkg.parts||{})
+  const [profile,setProfile]=useState(0)
+  const [mode,setMode]=useState<'merge'|'replace'>('merge')
+  const [selected,setSelected]=useState<Record<string,boolean>>(()=>Object.fromEntries(available.map(k=>[k,true])))
+  return <div className="modal-backdrop"><div className="modal transfer-modal"><div className="modal-head"><div><div className="eyebrow">PACOTE DE TRANSFERÊNCIA</div><h2>Importar configuração</h2></div><button className="icon-btn" onClick={close}>×</button></div>
+    <div className="transfer-preview"><b>{pkg.profile?.name||'Perfil sem nome'}</b><span>Exportado em {pkg.exportedAt?new Date(pkg.exportedAt).toLocaleString('pt-BR'):'—'}</span></div>
+    <label className="form-label">Modo de importação<select value={mode} onChange={e=>setMode(e.target.value as any)}><option value="merge">Mesclar com o que já existe</option><option value="replace">Substituir a seção selecionada</option></select></label>
+    <p className="security-note">Mesclar é a opção mais segura: itens do pacote são adicionados/atualizados sem apagar o restante. Substituir troca a seção inteira e cria um backup automático antes.</p>
+    <div className="transfer-checks">{available.map(k=><label key={k} className="check-line"><input type="checkbox" checked={selected[k]!==false} onChange={e=>setSelected({...selected,[k]:e.target.checked})}/>{labelPart(k)} <small className="muted">{Array.isArray(pkg.parts[k])?`${pkg.parts[k].length} itens`:pkg.parts[k]?.items?`${pkg.parts[k].items.length} catálogos`:'configuração'}</small></label>)}</div>
+    <div className="modal-actions"><button className="ghost" onClick={close}>Cancelar</button><button className="primary" disabled={saving||!Object.values(selected).some(Boolean)} onClick={()=>onApply(pkg,selected,mode)}>{saving?'Importando…':'Importar para a conta atual'}</button></div>
+  </div></div>
+}
+function labelPart(k:string){return ({addons:'Addons',plugins:'Plugins',collections:'Coleções',catalogs:'Catálogos',library:'Biblioteca',watchProgress:'Progresso',watchedItems:'Histórico de assistidos',progress:'Progresso',history:'Histórico'} as any)[k]||k}
+function persistTransferSnapshot(inv:Inventory){const existing=JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]');existing.unshift({...makeLocalSnapshot(inv),label:'backup automático da conta destino'});localStorage.setItem('nuvio-snapshots',JSON.stringify(existing.slice(0,30)))}
+function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.9',inventory:inv}}
+
+function Drawer({title,close,children}:any){return <div className="drawer-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><aside className="drawer"><div className="drawer-head"><div><div className="eyebrow">DETALHES</div><h2>{title}</h2></div><button className="icon-btn" onClick={close}>×</button></div>{children}</aside></div>}
+function SimpleModal({title,close,children}:any){return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal small-modal"><div className="modal-head"><div><div className="eyebrow">CONTROLE</div><h2>{title}</h2></div><button className="icon-btn" onClick={close}>×</button></div>{children}</div></div>}
+function SnapshotModal({current,compare,close,onExport,onImport}:any){
+  const saved=typeof window!=='undefined'?JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]'):[]
+  return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal"><div className="modal-head"><div><div className="eyebrow">BACKUP E SNAPSHOT</div><h2>{compare?'Comparação de backup':'Proteção da configuração'}</h2></div><button className="icon-btn" onClick={close}>×</button></div>
+    {compare?<Compare current={current} previous={compare}/>:<><div className="snapshot-explain"><div className="big-check">✓</div><div><h3>Seu backup é útil, sim</h3><p>Ele é uma fotografia da configuração naquele momento. O painel cria backups automáticos antes de salvar alterações e também permite exportar/importar um arquivo para guardar fora do navegador.</p></div></div><div className="mini-stats"><span>{current.profiles.length} perfis</span><span>{saved.length} backups locais</span><span>até 30 versões</span></div><div className="snapshot-actions"><button className="primary" onClick={onExport}>Exportar backup</button><button className="ghost" onClick={onImport}>Importar backup</button><button className="ghost" disabled={!saved.length} onClick={()=>alert('O botão Comparar backup usa o backup local mais recente e mostra diferenças de quantidade e itens. Para restaurar uma conta, use a transferência por arquivo e selecione o que deseja importar.')}>Para que serve?</button></div><div className="security-note">Importar um backup pelo botão acima apenas abre o conteúdo para consulta. Ele não altera sua conta automaticamente. Para aplicar dados em outra conta, use <b>Transferência por arquivo</b>.</div></>}
+  </div></div>
+}
+function Compare({current,previous}:any){
+  const count=(inv:any,key:string)=>(inv?.profiles||[]).reduce((n:number,p:any)=>n+(p[key]?.length||0),0)
+  const label=(x:any)=>String(x?.name||x?.display_name||x?.title||x?.url||x?.id||'Sem nome')
+  const diff=(key:string)=>{const a=(previous?.profiles||[]).flatMap((p:any)=>p[key]||[]).map(label);const b=(current?.profiles||[]).flatMap((p:any)=>p[key]||[]).map(label);return {added:b.filter((x:string)=>!a.includes(x)).slice(0,12),removed:a.filter((x:string)=>!b.includes(x)).slice(0,12)}}
+  const keys=[['addons','Addons'],['plugins','Plugins'],['collections','Coleções'],['watchProgress','Progresso'],['library','Biblioteca'],['watchedItems','Histórico']]
+  return <div><p className="muted">Comparação do backup mais recente com o estado atual. Não é uma previsão: mostra o que mudou entre as duas fotografias.</p><div className="compare-grid">{keys.map(([k,l])=>{const d=count(current,k)-count(previous,k);return <div key={k}><span>{l}</span><b>{count(previous,k)} → {count(current,k)}</b><small>{d===0?'Sem alteração':`${d>0?'+':''}${d} itens`}</small></div>})}</div><div className="diff-list">{keys.map(([k,l])=>{const d=diff(k);if(!d.added.length&&!d.removed.length)return null;return <div className="diff-block" key={k}><b>{l}</b>{d.added.length>0&&<div><span className="diff-added">Adicionados</span>{d.added.map((x:string,i:number)=><small key={i}>+ {x}</small>)}</div>}{d.removed.length>0&&<div><span className="diff-removed">Removidos</span>{d.removed.map((x:string,i:number)=><small key={i}>− {x}</small>)}</div>}</div>})}</div></div>
+}
+function ImportModal({close,fileRef,importSnapshot}:any){return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal small-modal"><div className="modal-head"><div><div className="eyebrow">IMPORTAÇÃO</div><h2>Abrir snapshot</h2></div><button className="icon-btn" onClick={close}>×</button></div><p className="muted">O arquivo é lido localmente e não altera a conta.</p><button className="primary full" onClick={()=>fileRef.current?.click()}>Selecionar JSON</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={e=>e.target.files?.[0]&&importSnapshot(e.target.files[0])}/></div></div>}
