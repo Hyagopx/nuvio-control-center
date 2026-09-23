@@ -1,3 +1,8 @@
+# Nuvio Control Center v0.11.2 — Correção DNS do Diagnóstico
+
+- O resolvedor de DNS fixado agora atende aos dois formatos de callback do Node: endereço único e lista solicitada pelo `autoSelectFamily`.
+- Isso corrige `Invalid IP address: undefined` em ambientes Node 20+ sem remover a validação de DNS público nem a proteção contra SSRF.
+
 # Nuvio Control Center v0.11.1 — Build Fix: URLs do Diagnóstico
 
 - O filtro dos endereços de addon agora estreita explicitamente o tipo para `string`, corrigindo o erro TypeScript no build da Vercel.
