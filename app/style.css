@@ -224,3 +224,27 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
  .catalog-management{gap:10px}.catalog-management>.panel{border:0;background:transparent;overflow:visible}.catalog-management .panel-head{padding:8px 2px 10px;border:0}.catalog-management .panel-head p{font-size:11px;line-height:1.45}.catalog-management .catalog-table{padding:0}.catalog-table-head{display:none}.catalog-line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 10px;padding:12px 2px;border:0;border-bottom:1px solid #292d34;border-radius:0;background:transparent}.catalog-line>div:first-child{grid-column:1/-1}.catalog-line>div:first-child>b{font-size:14px}.catalog-line>div:first-child>small{display:block;color:#888e98;font-size:10px}.catalog-line>div:nth-child(2){grid-column:1;grid-row:2;max-width:100%;font-size:10px}.catalog-line>div:nth-child(3){grid-column:1;grid-row:3}.catalog-line>div:nth-child(4){grid-column:2;grid-row:2/ span 2;align-self:center}.catalog-line>div:nth-child(5){grid-column:1/-1}.catalog-line>div:nth-child(6){grid-column:2;grid-row:1;justify-self:end}.catalog-line>div:nth-child(5) input{min-height:36px}.catalog-line .row-actions{min-width:40px}.catalog-management .security-note{margin:10px 0;padding:10px 0;border:0;background:transparent;font-size:10px}
  .management-list-panel{border:0;background:transparent;overflow:visible}.management-list-panel .table-scroll{padding:0}.management-list-panel table,.management-list-panel tbody{display:block;width:100%;min-width:0}.management-list-panel thead{display:none}.management-list-panel tbody tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 12px;padding:12px 2px;border:0;border-bottom:1px solid #292d34;border-radius:0;background:transparent;box-shadow:none}.management-list-panel tbody td{padding:0;border:0;overflow:visible}.management-list-panel tbody td::before{display:none!important}.management-list-panel tbody td:first-child{grid-column:1/-1;min-width:0}.management-list-panel .item-name{font-size:14px;line-height:1.35}.management-list-panel .item-sub{font-size:10px;color:#858b95}.management-list-panel tbody td:nth-child(2),.management-list-panel tbody td:nth-child(3),.management-list-panel tbody td:nth-child(4){grid-column:auto;align-self:center}.management-list-panel tbody td:last-child{grid-column:1/-1}.management-list-panel .row-actions{justify-content:flex-start;gap:6px}.management-list-panel .row-action{min-height:34px;padding:6px 10px}.management-list-panel .number-chip{min-width:24px}.batch-catalog-list{grid-template-columns:1fr}.batch-preview-list{max-height:38dvh}.addon-editor-modal{padding:16px}.addon-editor-modal .modal-actions{gap:6px}.addon-editor-modal .modal-actions button{flex:1}
 }
+
+/* Protocol diagnostics and cross-profile addon copy */
+.manifest-analysis{display:flex;flex-direction:column;gap:10px;padding:14px;border:1px solid #2b2b34;border-radius:11px;background:#111115;margin:16px 0}
+.manifest-analysis h3{margin:0;font-size:14px}
+.manifest-analysis>p{margin:0;color:#aaaab4;font-size:12px;line-height:1.5}
+.manifest-capabilities{display:flex;flex-wrap:wrap;gap:7px}
+.manifest-capabilities span{border-radius:999px;padding:5px 9px;font-size:11px;background:#19191f}
+.manifest-capabilities .capability-on{color:#98e3ad;background:#10251a}
+.manifest-capabilities .capability-off{color:#9696a1}
+.manifest-parameters,.manifest-warning-list{display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:8px;background:#17171c;font-size:12px}
+.manifest-parameters b,.manifest-warning-list b{font-size:11px;color:#d7d7df}
+.manifest-parameters span,.manifest-warning-list span{color:#a5a5af;line-height:1.45;overflow-wrap:anywhere}
+.manifest-warning-list{background:#261f12;border:1px solid #51401c}
+.manifest-warning-list span{color:#e5c77c}
+.manifest-clean{color:#8ee3a9!important}
+.addon-profile-targets{display:flex;flex-direction:column;gap:7px;margin:12px 0;max-height:38vh;overflow:auto}
+.addon-profile-target,.copy-settings-option{display:grid;grid-template-columns:20px minmax(0,1fr) auto;align-items:center;gap:9px;padding:10px;border:1px solid #303039;border-radius:9px;background:#17171c;cursor:pointer}
+.addon-profile-target input,.copy-settings-option input{width:16px;height:16px;accent-color:#8050e5}
+.addon-profile-target span,.copy-settings-option span{font-weight:600}
+.addon-profile-target small{color:#92929c;font-size:11px}
+.copy-settings-option{grid-template-columns:20px minmax(0,1fr);margin:12px 0;cursor:pointer}
+.copy-settings-option small{grid-column:2;color:#92929c;font-size:11px}
+.transfer-warning{padding:10px;border:1px solid #6d5120;border-radius:8px;background:#2b2312;color:#e8c879;font-size:12px}
+@media(max-width:520px){.addon-profile-target{grid-template-columns:20px minmax(0,1fr);}.addon-profile-target small{grid-column:2}.manifest-analysis{padding:11px}}
