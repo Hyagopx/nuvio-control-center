@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { readJsonLimited, RequestJsonError } from '../../../../lib/request-json'
+import { safeExternalFetch } from '../../../../lib/safe-external-fetch'
 
 function normalizeAddonBase(raw: string) {
   const u = new URL(raw)
@@ -73,12 +75,12 @@ function analyzeManifest(m: any) {
 async function getJson(url: string, timeoutMs = 12000) {
   const started = Date.now()
   try {
-    const r = await fetch(url, { cache: 'no-store', redirect: 'follow', signal: AbortSignal.timeout(timeoutMs), headers: { Accept: 'application/json, text/plain;q=0.9, */*;q=0.8' } })
-    const body = await r.text()
+    const r = await safeExternalFetch(url, { timeoutMs, maxBytes: 2_000_000, accept: 'application/json,text/plain;q=0.9,*/*;q=0.8' })
     let json: any = null
-    try { json = JSON.parse(body) } catch {}
+    try { json = JSON.parse(r.body.toString('utf8')) } catch {}
     const validObject = !!json && typeof json === 'object' && !Array.isArray(json)
-    return { ok: r.ok && validObject, httpStatus: r.status, latencyMs: Date.now() - started, finalUrl: r.url, json: validObject ? json : null, error: r.ok ? (validObject ? null : 'Resposta não é um objeto JSON válido.') : `HTTP ${r.status}` }
+    const responseOk = r.status >= 200 && r.status < 300
+    return { ok: responseOk && validObject, httpStatus: r.status, latencyMs: Date.now() - started, finalUrl: r.url, json: validObject ? json : null, error: !responseOk ? `HTTP ${r.status}` : validObject ? null : 'Resposta não é um objeto JSON válido.' }
   } catch (e: any) {
     return { ok: false, httpStatus: null, latencyMs: Date.now() - started, finalUrl: null, json: null, error: e?.name === 'TimeoutError' ? `Timeout (${timeoutMs / 1000}s)` : (e?.message || 'Falha de rede') }
   }
@@ -165,7 +167,7 @@ async function runAddon(raw: string, emit: (result: any, phase: string) => void)
 
 export async function POST(req: NextRequest) {
   let body: any
-  try { body = await req.json() } catch { return NextResponse.json({ error: 'Corpo JSON inválido.' }, { status: 400 }) }
+  try { body = await readJsonLimited(req, 64_000) } catch (e:any) { return NextResponse.json({ error: e.message || 'Corpo JSON inválido.' }, { status: e instanceof RequestJsonError ? e.status : 400 }) }
   if (!Array.isArray(body?.urls)) return NextResponse.json({ error: 'urls deve ser um array.' }, { status: 400 })
   const unique: string[] = Array.from(new Set<string>(body.urls.filter((x: any): x is string => typeof x === 'string' && /^https?:\/\//i.test(x)))).slice(0, 50)
   const encoder = new TextEncoder()

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { readJsonLimited, RequestJsonError } from '../../../../lib/request-json'
+import { boundedFetchText } from '../../../../lib/bounded-fetch'
 
 function ids(x: any) {
   const raw = x?.ids || x?.meta?.ids || {}
@@ -14,7 +16,7 @@ function ids(x: any) {
 
 export async function POST(req: NextRequest) {
   try {
-    const { clientId, accessToken, items } = await req.json()
+    const { clientId, accessToken, items } = await readJsonLimited(req, 4_000_000)
     if (!clientId || !accessToken || !Array.isArray(items)) return NextResponse.json({ error: 'Client ID, Access Token e itens são obrigatórios.' }, { status: 400 })
     const movies: any[] = [], shows: any[] = []
     for (const x of items) {
@@ -28,9 +30,9 @@ export async function POST(req: NextRequest) {
     }
     const body: any = {}; if (movies.length) body.movies = movies.slice(0, 100); if (shows.length) body.shows = shows.slice(0, 100)
     if (!body.movies && !body.shows) return NextResponse.json({ error: 'Nenhum item com IMDb/TMDB/Trakt ID reconhecível.' }, { status: 400 })
-    const r = await fetch('https://api.trakt.tv/sync/collection', { method: 'POST', headers: { 'trakt-api-key': String(clientId), 'trakt-api-version': '2', Authorization: `Bearer ${String(accessToken)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), cache: 'no-store' })
-    const data = await r.json().catch(() => ({}))
+    const {response:r,text} = await boundedFetchText('https://api.trakt.tv/sync/collection', { method: 'POST', headers: { 'trakt-api-key': String(clientId), 'trakt-api-version': '2', Authorization: `Bearer ${String(accessToken)}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, {timeoutMs:20_000,maxBytes:2_000_000})
+    let data:any={};try{data=text?JSON.parse(text):{}}catch{}
     if (!r.ok) return NextResponse.json({ error: data?.message || data?.error || `Trakt HTTP ${r.status}`, data }, { status: r.status === 401 ? 401 : 502 })
     return NextResponse.json({ ok: true, sent: (body.movies?.length || 0) + (body.shows?.length || 0), data })
-  } catch (e: any) { return NextResponse.json({ error: e?.message || 'Falha ao sincronizar com Trakt.' }, { status: 502 }) }
+  } catch (e: any) { return NextResponse.json({ error: e?.message || 'Falha ao sincronizar com Trakt.' }, { status: e instanceof RequestJsonError ? e.status : 502 }) }
 }

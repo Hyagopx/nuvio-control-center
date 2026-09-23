@@ -6,6 +6,9 @@ import {
   getField, mediaTitle, mediaType, normalizeCollections, normalizeInventory, profileId, seriesKey,
   type Addon, type CatalogSettings, type Inventory, type ProfileRecord,
 } from '../lib/nuvio'
+import { changedSections, describeSections, findProfile, findProfileIndex, planSave, sameProfiles, verifySavedSections, type WritableSection } from '../lib/sync-safety'
+import { readLocalSnapshots, storeLocalSnapshot } from '../lib/local-snapshots'
+import { LibraryPage, WatchPage } from '../components/screens/ProfileDataScreens'
 
 const NAV = [
   ['overview', 'Visão geral', 'Resumo da conta'],
@@ -43,6 +46,8 @@ export default function Home() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [utilitiesOpen, setUtilitiesOpen] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [profileDataLoading, setProfileDataLoading] = useState<'library'|'history'|null>(null)
+  const [profileDataError, setProfileDataError] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [diag, setDiag] = useState<Record<string, Health>>({})
@@ -71,9 +76,12 @@ export default function Home() {
   const transferFileRef = useRef<HTMLInputElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const collectionFileRef = useRef<HTMLInputElement>(null)
+  const serverBaselineRef = useRef<Inventory | null>(null)
+  const profileDataRequestRef = useRef<string | null>(null)
 
   const p = inv?.profiles?.[active] || inv?.profiles?.[0] || EMPTY_PROFILE
-  const counts = { addons: p.addons.length, plugins: p.plugins.length, collections: p.collections.length, progress: p.watchProgress.length, library: p.library.length, watched: p.watchedItems.length }
+  const counts = { addons: p.addons.length, plugins: p.plugins.length, collections: p.collections.length, progress: p.watchProgress.length, library: p.libraryLoaded === false ? '—' : p.library.length, watched: p.watchedItemsLoaded === false ? '—' : p.watchedItems.length }
+  function installServerInventory(fresh:Inventory) { serverBaselineRef.current = structuredClone(fresh); setInv(fresh) }
 
   useEffect(() => {
     const raw = localStorage.getItem('nuvio-session')
@@ -87,7 +95,7 @@ export default function Home() {
           setToken(d.access_token); setRefreshToken(d.refresh_token || session.refresh_token)
           localStorage.setItem('nuvio-session', JSON.stringify({ email: session.email, refresh_token: d.refresh_token || session.refresh_token }))
           const next = await fetchInventoryStatic(d.access_token)
-          setInv(next)
+          installServerInventory(next)
         })
         .catch(() => localStorage.removeItem('nuvio-session'))
         .finally(() => setBooting(false))
@@ -105,6 +113,11 @@ export default function Home() {
     diagnose(p.addons)
   }, [tab, inv, token])
 
+  useEffect(() => {
+    if (tab === 'library' && p.libraryLoaded === false && !profileDataLoading && !profileDataError) void loadProfileData('library', false)
+    if (tab === 'watch' && p.watchedItemsLoaded === false && !profileDataLoading && !profileDataError) void loadProfileData('history', false)
+  }, [tab, active, token, p.libraryLoaded, p.watchedItemsLoaded, profileDataLoading, profileDataError])
+
   async function fetchInventoryStatic(accessToken: string) {
     const r = await fetch('/api/nuvio/inventory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: accessToken }) })
     const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha ao carregar inventário')
@@ -112,13 +125,64 @@ export default function Home() {
   }
   async function fetchInventory(accessToken = token) { if (!accessToken) throw new Error('Sessão Nuvio não disponível.'); return fetchInventoryStatic(accessToken) }
 
+  async function fetchAllProfileData(kind:'library'|'history', id:number) {
+    const all:any[]=[]
+    for(let page=1;page<=500;page++){
+      const response=await fetch('/api/nuvio/profile-data',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:id,kind,page})})
+      const data=await response.json();if(!response.ok)throw new Error(data.error||`Falha ao exportar ${kind}.`)
+      all.push(...data.items)
+      if(!data.hasMore)return all
+    }
+    throw new Error(`O limite de páginas foi atingido ao exportar ${kind}.`)
+  }
+
+  async function completeInventoryForBackup(source:Inventory) {
+    if(!token)return source
+    const profiles=[]
+    for(const record of source.profiles){
+      const next={...record}
+      if(next.libraryLoaded===false){next.library=await fetchAllProfileData('library',profileId(record));next.libraryLoaded=true;next.libraryPage=Math.ceil(next.library.length/100);next.libraryHasMore=false}
+      if(next.watchedItemsLoaded===false){next.watchedItems=await fetchAllProfileData('history',profileId(record));next.watchedItemsLoaded=true;next.watchedItemsPage=Math.ceil(next.watchedItems.length/100);next.watchedItemsHasMore=false}
+      profiles.push(next)
+    }
+    return {...source,profiles}
+  }
+
+  async function loadProfileData(kind:'library'|'history', append=true) {
+    if (!token || !inv || profileDataRequestRef.current) return
+    const profile = inv.profiles[active]
+    if (!profile) return
+    const id = profileId(profile)
+    const loaded = kind === 'library' ? profile.libraryLoaded : profile.watchedItemsLoaded
+    const hasMore = kind === 'library' ? profile.libraryHasMore : profile.watchedItemsHasMore
+    if (append && loaded && !hasMore) return
+    const page = append ? ((kind === 'library' ? profile.libraryPage : profile.watchedItemsPage) || 0) + 1 : 1
+    profileDataRequestRef.current=`${id}:${kind}:${page}`
+    setProfileDataLoading(kind); setProfileDataError('')
+    try {
+      const response = await fetch('/api/nuvio/profile-data', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token,profileId:id,kind,page}) })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Falha ao carregar os dados do perfil.')
+      setInv(current => {
+        if (!current) return current
+        const index = findProfileIndex(current.profiles, id)
+        if (index < 0) return current
+        const profiles = [...current.profiles], existing = profiles[index]
+        if (kind === 'library') profiles[index] = { ...existing, library: append ? [...existing.library, ...data.items] : data.items, libraryLoaded:true, libraryPage:data.page, libraryHasMore:data.hasMore }
+        else profiles[index] = { ...existing, watchedItems: append ? [...existing.watchedItems, ...data.items] : data.items, watchedItemsLoaded:true, watchedItemsPage:data.page, watchedItemsHasMore:data.hasMore }
+        return { ...current, profiles }
+      })
+    } catch (e:any) { setProfileDataError(e.message || 'Falha ao carregar os dados do perfil.') }
+    finally { profileDataRequestRef.current=null; setProfileDataLoading(null) }
+  }
+
   async function login(e: React.FormEvent) {
     e.preventDefault(); setLoading(true); setError(''); setNotice('')
     try {
       const r = await fetch('/api/nuvio/sign-in', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
       const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha no login')
       const next = await fetchInventory(d.access_token)
-      setToken(d.access_token); setRefreshToken(d.refresh_token || ''); setInv(next); setPassword(''); setActive(0); setTab('overview'); setDirty(false)
+      setToken(d.access_token); setRefreshToken(d.refresh_token || ''); installServerInventory(next); setPassword(''); setActive(0); setTab('overview'); setDirty(false)
       if (remember && d.refresh_token) localStorage.setItem('nuvio-session', JSON.stringify({ email, refresh_token: d.refresh_token }))
       else localStorage.removeItem('nuvio-session')
     } catch (e: any) { setError(e.message || 'Erro') } finally { setLoading(false) }
@@ -126,19 +190,23 @@ export default function Home() {
 
   function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.9', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
   function persistSnapshot(customInv = inv, label = '') {
-    if (!customInv) return
-    const existing = JSON.parse(localStorage.getItem('nuvio-snapshots') || '[]')
-    existing.unshift({ ...makeSnapshot(customInv), label }); localStorage.setItem('nuvio-snapshots', JSON.stringify(existing.slice(0, 30)))
+    if (!customInv) return false
+    const partialSections=partialSectionsFor(customInv)
+    return storeLocalSnapshot(localStorage, { ...makeSnapshot(customInv), label, partialSections }).saved
   }
-  function saveSnapshotLocal() { if (!inv) return; persistSnapshot(); setNotice('Backup local salvo no navegador.'); setSnapshotOpen(true) }
-  function downloadSnapshot(customInv = inv) {
+  function partialSectionsFor(customInv:Inventory) { return customInv.profiles.flatMap(profile=>[
+      ...(profile.libraryLoaded===false?[`library:${profileId(profile)}`]:[]),
+      ...(profile.watchedItemsLoaded===false?[`watchedItems:${profileId(profile)}`]:[]),
+    ]) }
+  async function saveSnapshotLocal() { if (!inv) return; setNotice('Preparando backup local…'); try { const complete=await completeInventoryForBackup(inv), partial=partialSectionsFor(complete), result=storeLocalSnapshot(localStorage,{...makeSnapshot(complete),label:'backup manual',partialSections:partial}); setNotice(!result.saved?'O navegador não tem espaço livre para guardar este backup. Exporte um arquivo para manter uma cópia.':partial.length?'Backup local salvo, mas é parcial porque alguns dados não estão disponíveis nesta sessão.':'Backup local completo salvo no navegador.') } catch(e:any) { setNotice(e.message||'Não foi possível concluir o backup local.') } setSnapshotOpen(true) }
+  async function downloadSnapshot(customInv = inv) {
     if (!customInv) return
-    const b = new Blob([JSON.stringify(makeSnapshot(customInv), null, 2)], { type: 'application/json' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = `nuvio-backup-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 500)
+    try { const complete=await completeInventoryForBackup(customInv); const partial=partialSectionsFor(complete); const b = new Blob([JSON.stringify({...makeSnapshot(complete),partialSections:partial}, null, 2)], { type: 'application/json' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = `nuvio-backup-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 500); if(partial.length)setNotice('Backup exportado parcialmente; ele indica os dados que não estavam carregados.') } catch(e:any) { setError(e.message||'Falha ao exportar backup completo.') }
   }
   function importSnapshot(file: File) {
-    const reader = new FileReader(); reader.onload = () => { try { const raw = JSON.parse(String(reader.result)); const data = normalizeInventory(raw?.inventory?.profiles ? raw.inventory : raw); setInv(data); setToken(''); setRefreshToken(''); setEmail(''); setActive(0); setTab('overview'); setSelected(null); setImportOpen(false); setDirty(false); setError(''); setNotice('Backup aberto somente para consulta. Ele não altera a conta.'); } catch (e: any) { setError(e.message || 'Backup inválido.') } }; reader.readAsText(file)
+    const reader = new FileReader(); reader.onload = () => { try { const raw = JSON.parse(String(reader.result)); const data = normalizeInventory(raw?.inventory?.profiles ? raw.inventory : raw); serverBaselineRef.current = null; setInv(data); setToken(''); setRefreshToken(''); setEmail(''); setActive(0); setTab('overview'); setSelected(null); setImportOpen(false); setDirty(false); setError(''); setNotice('Backup aberto somente para consulta. Ele não altera a conta.'); } catch (e: any) { setError(e.message || 'Backup inválido.') } }; reader.readAsText(file)
   }
-  function openCompare() { const saved = JSON.parse(localStorage.getItem('nuvio-snapshots') || '[]'); if (saved.length) { setCompare(normalizeInventory(saved[0].inventory)); setSnapshotOpen(true) } else setError('Ainda não há backups locais.') }
+  function openCompare() { const saved = readLocalSnapshots(localStorage); if (saved.length) { setCompare(normalizeInventory(saved[0].inventory)); setNotice(saved[0].partialSections?.length?`Este snapshot local é parcial; ainda não incluía ${saved[0].partialSections.length} conjunto(s) que não haviam sido carregados.`:'Snapshot completo carregado para comparação.'); setSnapshotOpen(true) } else setError('Ainda não há backups locais.') }
 
   function sanitizeTransferPart(kind: string, value: any) {
     if (kind === 'addons') return (Array.isArray(value) ? value : []).map((x:any,i:number)=>({ url: addonUrl(x?.url || ''), name: String(x?.name || x?.display_name || ''), enabled: x?.enabled !== false, sort_order: i })).filter((x:any)=>x.url)
@@ -156,22 +224,41 @@ export default function Home() {
   }
   async function applyTransferPackage(pkg:any, selectedParts: Record<string,boolean>, mode:'merge'|'replace') {
     if (!token) { setError('Conecte uma conta Nuvio destino antes de importar.'); return }
-    setSaving(true); setError('')
+    setSaving(true); setError(''); let completed:string[]=[]
     try {
-      persistSnapshot(inv, 'backup antes da importação de pacote')
-      const next = structuredClone(p) as ProfileRecord
+      const completeBackup=await completeInventoryForBackup(inv!)
+      persistSnapshot(completeBackup, 'backup antes da importação de pacote')
+      const latest=await fetchInventory(token), cloudProfile=findProfile(latest,profileId(p))
+      if(!cloudProfile)throw new Error('O perfil destino não existe mais na conta.')
+      const baselineProfile=findProfile(serverBaselineRef.current||{profiles:[]},profileId(p))
+      const selectedSections:WritableSection[]=[]
+      if(selectedParts.addons)selectedSections.push('addons')
+      if(selectedParts.plugins)selectedSections.push('plugins')
+      if(selectedParts.collections)selectedSections.push('collections')
+      if(selectedParts.catalogs)selectedSections.push('catalogSettings')
+      if(selectedParts.library)selectedSections.push('library')
+      if(selectedParts.progress)selectedSections.push('watchProgress')
+      if(selectedParts.history)selectedSections.push('watchedItems')
+      const conflicts=changedSections(baselineProfile,cloudProfile,selectedSections.filter(x=>x!=='library'&&x!=='watchedItems'))
+      if(conflicts.length)throw new Error(`O perfil mudou na nuvem (${describeSections(conflicts)}). Nenhuma parte do pacote foi aplicada; releia a conta antes de tentar novamente.`)
+      const next = structuredClone(cloudProfile) as ProfileRecord
       const part = (k:string) => pkg.parts?.[k]
       if (selectedParts.addons && Array.isArray(part('addons'))) next.addons = mode==='replace' ? part('addons') : mergeByUrl(next.addons, part('addons'))
       if (selectedParts.plugins && Array.isArray(part('plugins'))) next.plugins = mode==='replace' ? part('plugins') : mergeByUrl(next.plugins, part('plugins'))
       if (selectedParts.collections && Array.isArray(part('collections'))) next.collections = mode==='replace' ? part('collections') : mergeCollections(next.collections, part('collections'))
-      if (selectedParts.library && Array.isArray(part('library'))) next.library = mode==='replace' ? part('library') : mergeByIdentity(next.library, part('library'))
+      if (selectedParts.library && Array.isArray(part('library'))) { next.library = await fetchAllProfileData('library',profileId(p)); next.library = mode==='replace' ? part('library') : mergeByIdentity(next.library, part('library')); next.libraryLoaded=true }
       if (selectedParts.progress && Array.isArray(part('watchProgress'))) next.watchProgress = mode==='replace' ? part('watchProgress') : mergeByIdentity(next.watchProgress, part('watchProgress'))
-      if (selectedParts.history && Array.isArray(part('watchedItems'))) next.watchedItems = mode==='replace' ? part('watchedItems') : mergeByIdentity(next.watchedItems, part('watchedItems'))
+      if (selectedParts.history && Array.isArray(part('watchedItems'))) { next.watchedItems = await fetchAllProfileData('history',profileId(p)); next.watchedItems = mode==='replace' ? part('watchedItems') : mergeByIdentity(next.watchedItems, part('watchedItems')); next.watchedItemsLoaded=true }
       if (selectedParts.catalogs && part('catalogs')) next.catalogSettings = mergeCatalogSettings(next.catalogSettings, part('catalogs'), mode)
       const kinds: Array<[string,any]> = [['addons',next.addons],['plugins',next.plugins],['collections',next.collections],['catalog-settings',next.catalogSettings],['library',next.library],['watch-progress',next.watchProgress],['watched-items',next.watchedItems]]
-      for (const [kind,items] of kinds) { const key = kind==='catalog-settings'?'catalogs':kind; if (!selectedParts[key]) continue; const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileId(p),kind,items,settings:kind==='catalog-settings'?items:undefined})}); const d=await r.json(); if(!r.ok) throw new Error(d.error||`Falha ao importar ${key}`) }
-      const fresh=await fetchInventory(token); setInv(fresh); setDirty(false); setTransferFileOpen(false); setTransferPackage(null); setNotice('Pacote importado, salvo e verificado na conta atual.')
-    } catch(e:any){setError(e.message||'Falha na importação')} finally {setSaving(false)}
+      for (const [kind,items] of kinds) { const key = kind==='catalog-settings'?'catalogs':kind==='watch-progress'?'progress':kind==='watched-items'?'history':kind; if (!selectedParts[key]) continue; const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileId(p),kind,items,settings:kind==='catalog-settings'?items:undefined})}); const d=await r.json(); if(!r.ok) throw new Error(d.error||`Falha ao importar ${key}`);completed.push(key) }
+      const fresh=await fetchInventory(token),savedProfile=findProfile(fresh,profileId(p))
+      if(savedProfile&&selectedParts.library){savedProfile.library=await fetchAllProfileData('library',profileId(p));savedProfile.libraryLoaded=true}
+      if(savedProfile&&selectedParts.history){savedProfile.watchedItems=await fetchAllProfileData('history',profileId(p));savedProfile.watchedItemsLoaded=true}
+      const differences=verifySavedSections(next,savedProfile,selectedSections)
+      if(differences.length)throw new Error(`A nuvem foi relida, mas não confirmou: ${describeSections(differences)}.`)
+      installServerInventory(fresh); setDirty(false); setTransferFileOpen(false); setTransferPackage(null); setNotice('Pacote importado, salvo e verificado na conta atual.')
+    } catch(e:any){if(completed.length){try{const fresh=await fetchInventory(token);installServerInventory(fresh)}catch{};setError(`${e.message||'Falha na importação'} Partes enviadas: ${completed.join(', ')}. A conta foi relida; confira as partes restantes antes de tentar novamente.`)}else setError(e.message||'Falha na importação')} finally {setSaving(false)}
   }
 
   async function diagnose(rows: Addon[]) {
@@ -219,10 +306,10 @@ export default function Home() {
         const fresh = await fetchInventory(token)
         const freshIndex = fresh.profiles.findIndex(x => profileId(x) === targetId)
         if (freshIndex < 0) throw new Error('O perfil selecionado não foi encontrado na conta atualizada.')
-        setInv(fresh); setActive(freshIndex); setDirty(false); setNotice('Alterações locais descartadas; dados atualizados da conta.')
+        installServerInventory(fresh); setActive(freshIndex); setDirty(false); setNotice('Alterações locais descartadas; dados atualizados da conta.')
       } catch (e:any) { setError(e.message || 'Não foi possível descartar as alterações.'); return }
     } else setActive(index)
-    setSelected(null); setQuery(''); setDiag({})
+    setSelected(null); setQuery(''); setDiag({}); setProfileDataError('')
   }
 
   async function saveKind(kind: 'addons' | 'plugins' | 'collections', itemsOverride?: any[]) {
@@ -232,42 +319,62 @@ export default function Home() {
       persistSnapshot(inv, `antes de salvar ${kind}`)
       const items = itemsOverride || (kind === 'addons' ? p.addons : kind === 'plugins' ? p.plugins : p.collections)
       const r = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(p), kind, items }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha ao salvar')
-      const fresh = await fetchInventory(token); setInv(fresh); setDirty(false); setNotice(`${kind === 'addons' ? 'Addons' : kind === 'plugins' ? 'Plugins' : 'Collections'} salvos e verificados.`)
+      const fresh = await fetchInventory(token); installServerInventory(fresh); setDirty(false); setNotice(`${kind === 'addons' ? 'Addons' : kind === 'plugins' ? 'Plugins' : 'Collections'} salvos e relidos da conta.`)
     } catch (e: any) { setError(e.message || 'Falha ao salvar') } finally { setSaving(false) }
   }
   async function saveCatalogSettings(settings: CatalogSettings) {
     if (!token) { setError('Snapshot é somente leitura.'); return }
-    setSaving(true); setError('')
+    setSaving(true); setError(''); setNotice('')
     try {
       persistSnapshot(inv, 'antes de salvar catálogos')
+      const baseline = serverBaselineRef.current
+      const latest = await fetchInventory(token)
+      const baselineProfile = findProfile(baseline || { profiles: [] }, profileId(p))
+      const cloudProfile = findProfile(latest, profileId(p))
+      const conflicts = changedSections(baselineProfile, cloudProfile, ['catalogSettings'])
+      if (conflicts.length) throw new Error(`A nuvem mudou os ${describeSections(conflicts)} em outro dispositivo. Seu rascunho foi mantido; releia a conta antes de tentar novamente.`)
       const r = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(p), kind: 'catalog-settings', settings }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha ao salvar catálogos')
-      const fresh = await fetchInventory(token); setInv(fresh); setDirty(false); setNotice('Catálogos salvos na conta e sincronização verificada.')
+      const fresh = await fetchInventory(token)
+      const savedProfile = findProfile(fresh, profileId(p))
+      if (changedSections({ ...p, catalogSettings: settings }, savedProfile, ['catalogSettings']).length) throw new Error('Os catálogos foram enviados, mas a releitura não confirmou os mesmos dados. O rascunho foi mantido.')
+      installServerInventory(fresh); setDirty(false); setNotice('Catálogos salvos e confirmados por releitura da conta.')
     } catch (e: any) { setError(e.message || 'Falha ao salvar catálogos') } finally { setSaving(false) }
   }
   async function saveAll() {
     if (!token) { setError('Snapshot é somente leitura.'); return }
     setSaving(true); setError(''); setNotice('')
+    let completed: string[] = []
     try {
       persistSnapshot(inv, 'backup antes de salvar todas as alterações')
-      const operations: Array<{kind:string;items:any;settings?:any}> = [
-        {kind:'addons',items:p.addons},
-        {kind:'plugins',items:p.plugins},
-        {kind:'collections',items:p.collections},
-        {kind:'catalog-settings',items:buildCatalogSettings(p,diag),settings:buildCatalogSettings(p,diag)},
-        {kind:'library',items:p.library},
-        {kind:'watch-progress',items:p.watchProgress},
-        {kind:'watched-items',items:p.watchedItems},
-      ]
+      const settings = buildCatalogSettings(p,diag)
+      const candidate = { ...p, catalogSettings: settings }
+      const sections: WritableSection[] = ['addons','plugins','collections','catalogSettings']
+      const baseline = serverBaselineRef.current
+      const latest = await fetchInventory(token)
+      const baselineProfile = findProfile(baseline || { profiles: [] }, profileId(p))
+      const cloudProfile = findProfile(latest, profileId(p))
+      const { intended, conflicts } = planSave(baselineProfile, candidate, cloudProfile, sections)
+      if (conflicts.length) throw new Error(`A nuvem mudou ${describeSections(conflicts)} em outro dispositivo. Nenhuma alteração foi enviada; seu rascunho foi mantido. Releia a conta para resolver o conflito.`)
+      const kindBySection: Record<WritableSection,string> = { addons:'addons', plugins:'plugins', collections:'collections', catalogSettings:'catalog-settings', library:'library', watchProgress:'watch-progress', watchedItems:'watched-items' }
+      const valueBySection: Record<WritableSection,any> = { addons:p.addons, plugins:p.plugins, collections:p.collections, catalogSettings:settings, library:p.library, watchProgress:p.watchProgress, watchedItems:p.watchedItems }
+      const operations = intended.map(section => ({kind:kindBySection[section], items:valueBySection[section], settings:section==='catalogSettings'?settings:undefined}))
+      if (!operations.length) { installServerInventory(latest); setDirty(false); setNotice('A conta já contém as alterações atuais.'); return }
       for (const op of operations) {
         const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileId(p),kind:op.kind,items:op.items,settings:op.settings})})
         const d=await r.json(); if(!r.ok) throw new Error(d.error||`Falha ao salvar ${op.kind}`)
+        completed.push(op.kind)
       }
       const fresh=await fetchInventory(token)
       const confirmed=fresh.profiles.find(x=>profileId(x)===profileId(p))
-      const differences=confirmed?verifyCoreProfile(p,confirmed,diag):['O perfil não apareceu na releitura da conta.']
-      if(differences.length) throw new Error(`A Cloud foi relida, mas divergiu em: ${differences.join('; ')}. Suas alterações locais foram mantidas.`)
-      setInv(fresh); setDirty(false); setNotice('Alterações salvas, relidas e confirmadas na conta.')
-    } catch(e:any){setError(e.message||'Falha ao salvar todas as alterações')} finally {setSaving(false)}
+      const differences=verifySavedSections(candidate,confirmed,intended)
+      if(differences.length) throw new Error(`A nuvem foi relida, mas não confirmou: ${describeSections(differences)}. Seu rascunho foi mantido.`)
+      installServerInventory(fresh); setDirty(false); setNotice('Alterações salvas, relidas e confirmadas na conta.')
+    } catch(e:any){
+      if (completed.length) {
+        try { const fresh = await fetchInventory(token); serverBaselineRef.current = structuredClone(fresh) } catch {}
+        setError(`${e.message||'Falha ao salvar as alterações'}${completed.length ? ` Salvamento parcial concluído: ${completed.join(', ')}. O restante continua como rascunho e pode ser salvo novamente.` : ''}`)
+      } else setError(e.message||'Falha ao salvar todas as alterações')
+    } finally {setSaving(false)}
   }
 
   async function copyAddonToProfiles(targetIndexes: number[], includeCatalogSettings: boolean) {
@@ -285,14 +392,25 @@ export default function Home() {
     const belongsToAddon = (setting: any) => { const saved = String(setting.addon_id || setting.addonId || '').trim().toLowerCase(); return aliases.has(saved) || aliases.has(addonKey(saved)) }
     const copiedSettings = (source.catalogSettings?.items || []).filter(belongsToAddon)
     setSaving(true); setError(''); setNotice('')
+    let completedProfiles = 0
+    let completedWrites:string[]=[]
     try {
       persistSnapshot(inv, 'antes de copiar addon entre perfis')
-      let copied = 0
+      const latest = await fetchInventory(token)
+      const baseline = serverBaselineRef.current
+      const writeSections: WritableSection[] = includeCatalogSettings ? ['addons','catalogSettings'] : ['addons']
+      const sourceConflict = changedSections(findProfile(baseline || {profiles:[]}, profileId(source)), findProfile(latest, profileId(source)), writeSections)
+      if (sourceConflict.length) throw new Error(`O perfil de origem mudou em outro dispositivo (${describeSections(sourceConflict)}). Releia a conta antes de copiar.`)
+      for (const { profile } of eligible) {
+        const conflicts = changedSections(findProfile(baseline || {profiles:[]}, profileId(profile)), findProfile(latest, profileId(profile)), writeSections)
+        if (conflicts.length) throw new Error(`O perfil ${profile.profile?.name || profileId(profile)} mudou em outro dispositivo (${describeSections(conflicts)}). Nenhum addon foi copiado.`)
+      }
       let skipped = targets.length - eligible.length
       for (const { profile } of eligible) {
         const nextAddons = [...profile.addons, { url: item.url, name: item.name || item.display_name || '', enabled: item.enabled !== false, sort_order: profile.addons.length }]
         const addonsResponse = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(profile), kind: 'addons', items: nextAddons }) })
         const addonsResult = await addonsResponse.json(); if (!addonsResponse.ok) throw new Error(addonsResult.error || `Falha ao copiar para ${profile.profile?.name || 'perfil'}.`)
+        completedWrites.push(`${profile.profile?.name||profileId(profile)}: addon`)
         if (includeCatalogSettings && copiedSettings.length) {
           const currentSettings = profile.catalogSettings || { hide_unreleased_content: false, items: [] }
           const nextItems = [...currentSettings.items]
@@ -305,20 +423,22 @@ export default function Home() {
           }
           const settingsResponse = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(profile), kind: 'catalog-settings', settings: { ...currentSettings, items: nextItems } }) })
           const settingsResult = await settingsResponse.json(); if (!settingsResponse.ok) throw new Error(`Addon copiado para ${profile.profile?.name || 'perfil'}, mas as preferências dos catálogos falharam: ${settingsResult.error || 'erro ao salvar'}`)
+          completedWrites.push(`${profile.profile?.name||profileId(profile)}: preferências de catálogos`)
         }
-        copied++
+        completedProfiles++
       }
       const fresh = await fetchInventory(token)
-      setInv(fresh); setDirty(false); setAddonTransfer(null); setSelected(null)
-      setNotice(`${copied} addon(s) copiado(s) e sincronizado(s)${skipped ? `; ${skipped} perfil(is) ignorado(s) porque já tinham o addon` : ''}${includeCatalogSettings && copiedSettings.length ? ', com preferências de catálogos' : ''}.`)
+      for(const {profile} of eligible){const saved=findProfile(fresh,profileId(profile));if(!saved?.addons.some((addon:Addon)=>addonKey(addon.url||'')===url))throw new Error(`A nuvem não confirmou o addon no perfil ${profile.profile?.name||profileId(profile)}.`)}
+      installServerInventory(fresh); setDirty(false); setAddonTransfer(null); setSelected(null)
+      setNotice(`${completedProfiles} addon(s) copiado(s) e sincronizado(s)${skipped ? `; ${skipped} perfil(is) ignorado(s) porque já tinham o addon` : ''}${includeCatalogSettings && copiedSettings.length ? ', com preferências de catálogos' : ''}.`)
     } catch (e: any) {
-      try { const fresh = await fetchInventory(token); setInv(fresh) } catch {}
-      setError(e.message || 'Falha ao copiar addon entre perfis.')
+      try { const fresh = await fetchInventory(token); installServerInventory(fresh) } catch {}
+      setError(`${e.message || 'Falha ao copiar addon entre perfis.'}${completedWrites.length ? ` Gravações concluídas: ${completedWrites.join(', ')}. A conta foi relida; revise o resultado antes de repetir.` : ''}`)
     } finally { setSaving(false) }
   }
   async function saveProfileName() {
     if (!token) { setError('Snapshots são somente leitura.'); return }
-    setSaving(true); setError(''); try { const r = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(p), kind: 'profile-name', name: profileName }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha'); const fresh = await fetchInventory(token); setInv(fresh); setProfileModal(false); setDirty(false); setNotice('Nome do perfil atualizado.') } catch (e: any) { setError(e.message || 'Falha') } finally { setSaving(false) }
+    setSaving(true); setError(''); try { const latest=await fetchInventory(token); if(!sameProfiles(serverBaselineRef.current,latest))throw new Error('Os perfis mudaram em outro dispositivo. Releia a conta antes de renomear para não sobrescrever alterações.'); const r = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(p), kind: 'profile-name', name: profileName }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha'); const fresh = await fetchInventory(token), saved=findProfile(fresh,profileId(p)); if(String(saved?.profile?.name||'')!==profileName.trim())throw new Error('O nome foi enviado, mas a releitura da nuvem não confirmou a alteração.'); installServerInventory(fresh); setProfileModal(false); setDirty(false); setNotice('Nome do perfil salvo e confirmado por releitura.') } catch (e: any) { setError(e.message || 'Falha') } finally { setSaving(false) }
   }
 
   function openProfileEditor(index: number | null) {
@@ -349,17 +469,24 @@ export default function Home() {
     const allProfiles = inv.profiles.map(x => x.profile)
     const payload = isNew ? [...allProfiles, nextProfile] : allProfiles.map((x,i)=>i===profileEditIndex?nextProfile:x)
     setSaving(true); setError(''); setNotice('')
+    let profileSaved=false
     try {
+      const latest=await fetchInventory(token)
+      if(!sameProfiles(serverBaselineRef.current,latest))throw new Error('A lista de perfis mudou em outro dispositivo. Nenhum perfil foi salvo; releia a conta para evitar sobrescrever alterações.')
       const push = await fetch('/api/nuvio/mutate', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token,profileId:profileIndex,kind:'profiles',profiles:payload}) })
       const pushed = await push.json(); if (!push.ok) throw new Error(pushed.error || 'Falha ao salvar perfil.')
+      profileSaved=true
       if (profileDraft.pin.trim()) {
         const pinResponse = await fetch('/api/nuvio/mutate', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token,profileId:profileIndex,kind:'profile-pin',pin:profileDraft.pin.trim(),currentPin:profileDraft.currentPin.trim()}) })
         const pinResult = await pinResponse.json(); if (!pinResponse.ok) throw new Error(pinResult.error || 'Perfil salvo, mas não foi possível atualizar o PIN.')
       }
       const fresh = await fetchInventory(token)
-      setInv(fresh); setActive(Math.max(0,fresh.profiles.findIndex(x=>profileId(x)===profileIndex))); setProfileManagerOpen(false); setProfileFormOpen(false); setDirty(false)
+      const savedProfile=findProfile(fresh,profileIndex)
+      if(!savedProfile||String(savedProfile.profile?.name||'')!==name||String(savedProfile.profile?.avatar_id||'')!==String(nextProfile.avatar_id||'')||String(savedProfile.profile?.avatar_url||'')!==String(nextProfile.avatar_url||''))throw new Error('O perfil foi enviado, mas a releitura da nuvem não confirmou nome e avatar.')
+      if(profileDraft.pin.trim()&&savedProfile.profile?.pin_enabled!==true)throw new Error('Perfil confirmado, mas a releitura não confirmou a ativação do PIN.')
+      installServerInventory(fresh); setActive(Math.max(0,fresh.profiles.findIndex(x=>profileId(x)===profileIndex))); setProfileManagerOpen(false); setProfileFormOpen(false); setDirty(false)
       setNotice(isNew ? `Perfil “${name}” criado e sincronizado.` : `Perfil “${name}” atualizado e sincronizado.`)
-    } catch (e:any) { setError(e.message || 'Falha ao salvar perfil.') } finally { setSaving(false) }
+    } catch (e:any) { if(profileSaved){try{const fresh=await fetchInventory(token);installServerInventory(fresh)}catch{};setError(`${e.message || 'Falha ao salvar perfil.'} O perfil já foi enviado; confira o nome/avatar e conclua o PIN se necessário.`)}else setError(e.message || 'Falha ao salvar perfil.') } finally { setSaving(false) }
   }
 
   async function clearManagedProfilePin(profileIndex:number) {
@@ -370,7 +497,7 @@ export default function Home() {
     try {
       const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileIndex,kind:'profile-pin-clear',currentPin})})
       const d=await r.json(); if(!r.ok) throw new Error(d.error||'Não foi possível remover o PIN.')
-      const fresh=await fetchInventory(token); setInv(fresh); setNotice('PIN removido e estado atualizado.');
+      const fresh=await fetchInventory(token),updated=findProfile(fresh,profileIndex);if(updated?.profile?.pin_enabled===true)throw new Error('O PIN foi removido no envio, mas a releitura ainda informa que está ativo.');installServerInventory(fresh); setNotice('PIN removido e confirmado por releitura.');
     } catch(e:any){setError(e.message||'Falha ao remover PIN.')} finally {setSaving(false)}
   }
 
@@ -379,7 +506,7 @@ export default function Home() {
   function mergeCollections(target:any[], incoming:any[]){ const out=[...target]; for(const x of incoming){ const key=String(x?.id||x?.title||x?.name||''); const i=out.findIndex((y:any)=>String(y?.id||y?.title||y?.name||'')===key); if(i>=0) out[i]=x; else out.push(x) } return out }
   function mergeCatalogSettings(target:CatalogSettings|null, incoming:CatalogSettings, mode:'merge'|'replace'):CatalogSettings { if(mode==='replace') return structuredClone(incoming); const base:CatalogSettings = target || {hide_unreleased_content:false,items:[]}; const map=new Map(base.items.map(x=>[catalogCloudKey(x.addon_id,x.type,x.catalog_id),x])); for(const x of incoming.items||[]) map.set(catalogCloudKey(x.addon_id,x.type,x.catalog_id),x); return {...base, ...incoming, items:Array.from(map.values())} }
 
-  function navigate(id: string) { setTab(id); setQuery(''); setSelected(null); setMobileNavOpen(false) }
+  function navigate(id: string) { setTab(id); setQuery(''); setSelected(null); setProfileDataError(''); setMobileNavOpen(false) }
   function logout() { localStorage.removeItem('nuvio-session'); setInv(null); setToken(''); setRefreshToken(''); setDiag({}); setSelected(null); setCompare(null); setDirty(false); setNotice('') }
 
   if (booting) return <div className="login-wrap"><div className="login-card"><div className="brand large"><b>NUVIO</b><span>CONTROL</span></div><div className="login-copy"><h1>Restaurando sessão…</h1><p>Verificando a sessão salva sem pedir sua senha novamente.</p></div></div></div>
@@ -398,15 +525,15 @@ export default function Home() {
       <div className="mobile-topbar"><button className="mobile-nav-trigger" aria-label="Abrir menu" onClick={()=>setMobileNavOpen(true)}>☰</button><b>NUVIO <span>CONTROL</span></b></div>
       <div className="profile-strip"><div className="profile-label">PERFIS</div><div className="profile-tabs">{inv.profiles.map((x,i)=>{const avatar=getProfileAvatarUrl(x.profile,inv.avatarCatalog);return <button key={x.profile?.id || x.profile?.profile_index || i} className={i===active?'active':''} disabled={saving} onClick={() => void selectProfile(i)}><span className={`profile-dot${avatar?' has-image':''}`}>{avatar?<img src={avatar} alt=""/>:(x.profile?.name || `P${i+1}`).slice(0,1).toUpperCase()}</span>{x.profile?.name || `Perfil ${i+1}`}</button>})}</div><button className="ghost profile-manage-button" disabled={!token} onClick={()=>setProfileManagerOpen(true)}>Gerenciar perfis</button></div>
       <div className="page-head"><div><div className="eyebrow">CENTRO DE CONTROLE NUVIO</div><h1>{NAV.find(x=>x[0]===tab)?.[1] || 'Visão geral'}</h1><p>{profileLabel} · {NAV.find(x=>x[0]===tab)?.[2]}</p></div><div className="head-actions">{dirty && <span className="status-pill">ALTERAÇÕES LOCAIS</span>} {error && <button className="ghost" onClick={() => setError('')}>Fechar erro</button>}</div></div>
-      {notice && <div className="notice">✓ {notice}</div>}{error && <div className="alert">{error}</div>}
-      {dirty && <div className="pending-bar pending-global"><div><b>Há alterações não salvas</b><span>{token ? 'Você pode continuar editando. Ao sair, também será lembrado de salvar.' : 'O arquivo está em modo somente leitura.'}</span></div><div className="pending-actions"><button className="ghost" disabled={saving||!token} onClick={async()=>{try{const fresh=await fetchInventory(token);setInv(fresh);setDirty(false);setNotice('Alterações locais descartadas.')}catch(e:any){setError(e.message||'Não foi possível recarregar.')}}}>Descartar</button><button className="primary" disabled={saving||!token} onClick={saveAll}>{saving?'Salvando…':'Salvar todas'}</button></div></div>}
+      {notice && <div className="notice" role="status" aria-live="polite">✓ {notice}</div>}{error && <div className="alert" role="alert">{error}</div>}
+      {dirty && <div className="pending-bar pending-global"><div><b>Há alterações não salvas</b><span>{token ? 'Você pode continuar editando. Ao sair, também será lembrado de salvar.' : 'O arquivo está em modo somente leitura.'}</span></div><div className="pending-actions"><button className="ghost" disabled={saving||!token} onClick={async()=>{try{const fresh=await fetchInventory(token);installServerInventory(fresh);setDirty(false);setNotice('Alterações locais descartadas.')}catch(e:any){setError(e.message||'Não foi possível recarregar.')}}}>Descartar</button><button className="primary" disabled={saving||!token} onClick={saveAll}>{saving?'Salvando…':'Salvar todas'}</button></div></div>}
       {tab === 'overview' && <Overview p={p} counts={counts} inv={inv} live={!!token} onRename={() => { setProfileManagerOpen(true); openProfileEditor(active) }} />}
       {tab === 'addons' && <AddonPage profile={p} rows={p.addons} diag={diag} loading={diagLoading} diagnose={() => diagnose(p.addons)} q={query} setQ={setQuery} selected={selected} setSelected={setSelected} update={(items:any[]) => updateProfile(x => ({ ...x, addons: items }))} onAdd={() => setAddonModal({ mode:'add' })} onEdit={(item: Addon) => setAddonModal({ mode:'edit', item })} onCopy={(item:Addon)=>setAddonTransfer({item,sourceIndex:active})} token={!!token} lastSync={inv.fetchedAt} />}
       {tab === 'catalogs' && <CatalogPage profile={p} diag={diag} diagLoading={diagLoading} diagProgress={diagProgress} q={query} setQ={setQuery} token={!!token} saving={saving} dirty={dirty} onChange={(settings:CatalogSettings) => updateProfile(x => ({ ...x, catalogSettings: settings }))} onRefresh={() => diagnose(p.addons)} />}
       {tab === 'plugins' && <PluginPage rows={p.plugins} q={query} setQ={setQuery} selected={selected} setSelected={setSelected} update={(items:any[]) => updateProfile(x => ({ ...x, plugins: items }))} token={!!token} />}
       {tab === 'collections' && <CollectionPage rows={p.collections} q={query} setQ={setQuery} selected={selected} setSelected={setSelected} update={(items:any[]) => updateProfile(x => ({ ...x, collections: items }))} token={!!token} onAdd={() => setCollectionModal(newCollection())} onImport={() => collectionFileRef.current?.click()} onImportUrl={() => setCollectionImportOpen(true)} onEdit={(x:any)=>setCollectionModal(x)} onExport={(x:any)=>downloadCollection(x)} />}
-      {tab === 'watch' && <WatchPage rows={p.watchProgress} history={p.watchedItems} addons={p.addons} />}
-      {tab === 'library' && <LibraryPage rows={p.library} token={token} profile={p} onUpdate={(items:any[]) => updateProfile(x => ({ ...x, library: items }))} />}
+      {tab === 'watch' && <WatchPage rows={p.watchProgress} history={p.watchedItems} addons={p.addons} loading={profileDataLoading==='history'} error={profileDataError} hasMore={p.watchedItemsHasMore} onLoadMore={()=>void loadProfileData('history')} />}
+      {tab === 'library' && <LibraryPage rows={p.library} token={token} profile={p} onUpdate={(items:any[]) => updateProfile(x => ({ ...x, library: items }))} loading={profileDataLoading==='library'} error={profileDataError} hasMore={p.libraryHasMore} onLoadMore={()=>void loadProfileData('library')} />}
     </main>
     {snapshotOpen && <SnapshotModal compare={compare} current={inv} close={() => { setSnapshotOpen(false); setCompare(null) }} onExport={()=>downloadSnapshot()} onImport={()=>fileRef.current?.click()} />}
     {importOpen && <ImportModal close={() => setImportOpen(false)} fileRef={fileRef} importSnapshot={importSnapshot} />}
@@ -591,37 +718,7 @@ function CollectionEditor({value,close,save,catalogs}:any){
 
 function CollectionUrlModal({close,onImport}:any){const [url,setUrl]=useState('');const [busy,setBusy]=useState(false);async function go(){setBusy(true);try{const r=await fetch('/api/import-url',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Falha');onImport(d.data)}catch(e:any){alert(e.message||'Falha')}finally{setBusy(false)}}return <SimpleModal title="Importar coleções por URL" close={close}><label className="form-label">URL do JSON<input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://.../collections.json" /></label><p className="security-note">A URL é buscada pelo painel e deve retornar JSON de coleções Nuvio.</p><div className="modal-actions"><button className="ghost" onClick={close}>Cancelar</button><button className="primary" disabled={!url||busy} onClick={go}>{busy?'Importando…':'Importar'}</button></div></SimpleModal>}
 
-function WatchPage({rows,history,addons}:any){
-  const [q,setQ]=useState(''); const [filter,setFilter]=useState('unfinished'); const [group,setGroup]=useState(true); const [selected,setSelected]=useState<any|null>(null); const [resolving,setResolving]=useState(false)
-  const [records,setRecords]=useState<any[]>(()=>normalizeWatch(rows,history))
-  useEffect(()=>{setRecords(normalizeWatch(rows,history))},[rows,history])
-  async function resolveTitles(){
-    const missing=records.filter(x=>!x.title||x.title==='Sem título').slice(0,60); if(!missing.length)return
-    setResolving(true)
-    try{const r=await fetch('/api/nuvio/resolve-watch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({addons,items:missing.map(x=>({key:x.key,contentId:x.contentId,type:x.type}))})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Falha ao buscar metadados');if(Array.isArray(d.resolved)&&d.resolved.length){const by=new Map<string,any>(d.resolved.map((x:any)=>[String(x.key),x] as [string,any]));setRecords(prev=>prev.map(x=>{const hit=by.get(x.key);return hit?{...x,...hit,title:hit.title||x.title}:x}))}else alert('Nenhum título adicional foi encontrado nos addons de metadados.') }catch(e:any){alert(e.message||'Falha ao resolver títulos')}finally{setResolving(false)}
-  }
-  const filtered=records.filter((x:any)=>{const title=String(x.title||'Sem título').toLowerCase();const match=title.includes(q.toLowerCase())||x.key.toLowerCase().includes(q.toLowerCase());const state=filter==='all'||(filter==='unfinished'&&!x.finished)||(filter==='finished'&&x.finished);return match&&state})
-  const groups:any[][]=group?Object.values(filtered.reduce((m:any,x:any)=>{const k=x.seriesKey||x.key;(m[k]??=[]).push(x);return m},{})) as any[][]:filtered.map((x:any)=>[x])
-  return <div className="stack"><div className="toolbar"><div><h2>Progresso <span className="count-badge">{records.length}</span></h2><p>Continue assistindo, histórico e episódios agrupados.</p></div><div className="search-wrap compact">⌕<input placeholder="Filtrar título…" value={q} onChange={e=>setQ(e.target.value)}/></div><select className="toolbar-select" value={filter} onChange={e=>setFilter(e.target.value)}><option value="unfinished">Em andamento</option><option value="finished">Já assistidos</option><option value="all">Todos</option></select><button className={group?'primary':'ghost'} onClick={()=>setGroup(!group)}>{group?'Agrupado':'Separado'}</button><button className="ghost" disabled={resolving} onClick={resolveTitles}>{resolving?'Buscando títulos…':'Corrigir títulos'}</button></div>
-    <div className="watch-summary"><span>{records.filter((x:any)=>!x.finished).length} em andamento</span><span>{records.filter((x:any)=>x.finished).length} assistidos</span><span>{new Set(records.map((x:any)=>x.seriesKey||x.key)).size} grupos</span></div>
-    <div className="watch-groups">{groups.map((g:any[],i:number)=><div className="panel watch-group" key={i}><div className="watch-group-head"><div><h3>{g[0].seriesTitle||g[0].title||'Sem título'}</h3><span>{g.length>1?`${g.length} episódios`:g[0].type==='series'?'Série':'Filme'}</span></div><span className="number-chip">{g.filter(x=>!x.finished).length} pendentes</span></div>{g.map((x:any)=><WatchCard item={x} key={x.key} onOpen={()=>setSelected(x)}/>)}</div>)}{!groups.length&&<div className="panel empty">Nenhum item corresponde ao filtro.</div>}</div>
-    {selected&&<Drawer title={selected.title||'Detalhes do item'} close={()=>setSelected(null)}><div className="detail-cards"><div><span>Estado</span><b>{selected.finished?'Assistido':'Em andamento'}</b></div><div><span>Tipo</span><b>{selected.type||'—'}</b></div><div><span>Temporada</span><b>{selected.season??'—'}</b></div><div><span>Episódio</span><b>{selected.episode??'—'}</b></div><div><span>Progresso</span><b>{selected.pct?`${Math.round(selected.pct)}%`:'—'}</b></div><div><span>Última atividade</span><b>{selected.lastWatched?new Date(Number(selected.lastWatched)).toLocaleString('pt-BR'):'—'}</b></div></div><p className="security-note">O Watch Progress sincronizado registra posição, duração, episódio e identificadores. A fonte/servidor exato do stream não é mantido nesse registro, então o painel não consegue recuperar por qual addon/servidor você assistiu.</p><details><summary>Dados técnicos</summary><pre>{JSON.stringify(selected,null,2)}</pre></details></Drawer>}
-  </div>
-}
-function normalizeWatch(rows:any[],history:any[]){
-  const all=[...rows.map(x=>({...x,__source:'progress'})),...history.map(x=>({...x,__source:'history'}))]
-  const historyKeys=new Set<string>(); for(const x of all.filter(x=>x.__source==='history')) historyKeys.add(watchIdentity(x))
-  const map=new Map<string,any>()
-  for(const x of all){
-    const title=mediaTitle(x); const season=getField(x,['season','season_number','seasonNumber'],null); const episode=getField(x,['episode','episode_number','episodeNumber'],null); const contentId=String(getField(x,['content_id','contentId','parentContentId','id','video_id','videoId'],'')).trim(); const key=contentId||`${title}|${season||''}|${episode||''}`; const watched=Number(getField(x,['position','progress','playback_position'],0)||0); const duration=Number(getField(x,['duration','runtime','total','video_duration'],0)||0); const pct=duration>0?Math.min(100,watched/duration*100):Number(getField(x,['percent','progress_percent','progressPercent'],0)||0); const finished=x.__source==='history'||Boolean(x.finished||x.completed||pct>=95||x.watched===true)||historyKeys.has(watchIdentity(x)); const seriesTitle=getField(x,['series_title','seriesName','show_title','parentTitle'],null)||((season!=null||episode!=null)?title:null); const seriesIds=[x?.series_id,x?.seriesId,x?.show_id,x?.showId,x?.parentContentId]; const seriesId=seriesIds.find(v=>v!==undefined&&v!==null&&String(v).trim()); const sk=seriesId?`id:${String(seriesId).toLowerCase()}`:`title:${String(seriesTitle||title).trim().toLowerCase()}`; const old=map.get(key); const candidate={...x,key,title,contentId,seriesKey:sk,seriesTitle,season,episode,pct,finished,type:(season!=null||episode!=null)?'series':mediaType(x),poster:getField(x,['poster','poster_url','posterUrl'],null)||x?.meta?.poster,lastWatched:getField(x,['lastWatched','last_watched','updated_at','updatedAt'],null),position:watched,duration}
-    if(!old||Number(candidate.pct)>Number(old.pct)||candidate.finished&&!old.finished)map.set(key,candidate)
-  }
-  return Array.from(map.values()).sort((a,b)=>Number(b.lastWatched||0)-Number(a.lastWatched||0)||Number(b.pct)-Number(a.pct))
-}
-function watchIdentity(x:any){return String(getField(x,['content_id','contentId','parentContentId','id','video_id','videoId'],mediaTitle(x))).toLowerCase()}
-function WatchCard({item,onOpen}:any){return <button className="watch-card watch-card-button" onClick={onOpen}>{item.poster?<img src={item.poster} alt=""/>:<div className="poster-fallback">▶</div>}<div className="watch-body"><b>{item.title||'Sem título'}</b><span>{item.seriesTitle&&item.seriesTitle!==item.title?`${item.seriesTitle} · `:''}{item.season!=null?`T${item.season}`:''}{item.episode!=null?` · E${item.episode}`:''}</span><div className="progress-track"><i style={{width:`${Math.round(item.pct||0)}%`}}></i></div><small>{item.finished?'Assistido':item.pct?`${Math.round(item.pct)}% assistido`:'Progresso não informado'} · Toque para detalhes</small></div></button>}
 
-function LibraryPage({rows,token,profile,onUpdate}:any){const [q,setQ]=useState('');const [source,setSource]=useState<'nuvio'|'trakt'>('nuvio');const [trakt,setTrakt]=useState<any[]>([]);const [clientId,setClientId]=useState('');const [accessToken,setAccessToken]=useState('');const [busy,setBusy]=useState(false);const filtered=rows.filter((x:any)=>mediaTitle(x).toLowerCase().includes(q.toLowerCase()));async function loadTrakt(){if(!clientId||!accessToken){alert('Informe Client ID e Access Token do Trakt.');return}setBusy(true);try{const r=await fetch('/api/trakt/collection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId,accessToken})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Trakt recusou a consulta.');setTrakt([...(d.movies||[]).map((x:any)=>({...x,media_type:'movie',title:x.movie?.title,poster:x.movie?.images?.poster?.[0]})),...(d.shows||[]).map((x:any)=>({...x,media_type:'show',title:x.show?.title,poster:x.show?.images?.poster?.[0]}))]);setSource('trakt')}catch(e:any){alert(e.message||'Falha no Trakt')}finally{setBusy(false)}} async function pushTrakt(){if(!clientId||!accessToken){alert('Informe Client ID e Access Token do Trakt.');return}setBusy(true);try{const r=await fetch('/api/trakt/sync-collection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId,accessToken,items:rows})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Falha ao enviar para Trakt');alert(`Trakt recebeu ${d.sent||0} item(ns). Itens sem ID reconhecível foram ignorados.`)}catch(e:any){alert(e.message||'Falha no Trakt')}finally{setBusy(false)}}return <div className="stack"><div className="toolbar"><div><h2>Biblioteca <span className="count-badge">{rows.length}</span></h2><p>Biblioteca Nuvio com visualização opcional da coleção do Trakt.</p></div><div className="search-wrap compact">⌕<input placeholder="Buscar título…" value={q} onChange={e=>setQ(e.target.value)}/></div><button className={source==='nuvio'?'primary':'ghost'} onClick={()=>setSource('nuvio')}>Nuvio</button><button className={source==='trakt'?'primary':'ghost'} onClick={()=>setSource('trakt')}>Trakt</button></div><div className="panel trakt-panel"><div><b>Trakt</b><span> Consulta direta da sua collection. Tokens ficam somente no navegador.</span></div><input placeholder="Client ID" value={clientId} onChange={e=>setClientId(e.target.value)}/><input placeholder="Access Token" type="password" value={accessToken} onChange={e=>setAccessToken(e.target.value)}/><button className="ghost" disabled={busy} onClick={loadTrakt}>{busy?'Consultando…':'Consultar Trakt'}</button><button className="primary" disabled={busy||!rows.length} onClick={pushTrakt}>Nuvio → Trakt</button></div>{source==='trakt'?<div className="library-grid">{trakt.filter(x=>String(x.title||'').toLowerCase().includes(q.toLowerCase())).map((x:any,i:number)=><div className="library-card" key={i}>{x.poster?<img src={x.poster} alt=""/>:<div className="poster-fallback">TV</div>}<div><b>{x.title}</b><small>Trakt · {x.media_type}</small></div></div>)}</div>:<div className="library-grid">{filtered.slice(0,400).map((x:any,i:number)=><div className="library-card" key={i}><div className="poster-fallback">LIB</div><div><b>{mediaTitle(x)}</b><small>{mediaType(x)}</small></div></div>)}</div>}</div>}
 
 function AddonEditor({modal,existing=[],close,save}:any){
   const initial=modal.item||{url:'',name:'',enabled:true};const [mode,setMode]=useState<'single'|'batch'>('single');const [url,setUrl]=useState(initial.url||'');const [name,setName]=useState(initial.name||initial.display_name||'');const [enabled,setEnabled]=useState(initial.enabled!==false);const [list,setList]=useState('');const [results,setResults]=useState<any[]>([]);const [busy,setBusy]=useState(false);const [batchActive,setBatchActive]=useState(false);const batchActiveRef=useRef(false)
@@ -672,8 +769,8 @@ function AddonProfileTransferModal({item,sourceIndex,profiles,catalogPreferenceC
  <div className="modal-actions"><button className="ghost" onClick={close} disabled={saving}>Cancelar</button><button className="primary" disabled={saving||dirty||!selected.length} onClick={()=>onCopy(selected,includeSettings)}>{saving?'Copiando e sincronizando…':'Copiar addon'}</button></div></SimpleModal>
 }
 
-function Drawer({title,close,children}:any){return <div className="drawer-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><aside className="drawer"><div className="drawer-head"><div><div className="eyebrow">DETALHES</div><h2>{title}</h2></div><button className="icon-btn" onClick={close}>×</button></div>{children}</aside></div>}
-function SimpleModal({title,close,children}:any){return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal small-modal"><div className="modal-head"><div><div className="eyebrow">CONTROLE</div><h2>{title}</h2></div><button className="icon-btn" onClick={close}>×</button></div>{children}</div></div>}
+function Drawer({title,close,children}:any){return <div className="drawer-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="app-drawer-title"><div className="drawer-head"><div><div className="eyebrow">DETALHES</div><h2 id="app-drawer-title">{title}</h2></div><button className="icon-btn" onClick={close} aria-label="Fechar detalhes">×</button></div>{children}</aside></div>}
+function SimpleModal({title,close,children}:any){return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="app-modal-title"><div className="modal-head"><div><div className="eyebrow">CONTROLE</div><h2 id="app-modal-title">{title}</h2></div><button className="icon-btn" onClick={close} aria-label="Fechar janela">×</button></div>{children}</div></div>}
 function SnapshotModal({current,compare,close,onExport,onImport}:any){
   const saved=typeof window!=='undefined'?JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]'):[]
   return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal"><div className="modal-head"><div><div className="eyebrow">BACKUP E SNAPSHOT</div><h2>{compare?'Comparação de backup':'Proteção da configuração'}</h2></div><button className="icon-btn" onClick={close}>×</button></div>

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { nuvioCall } from '../../../../lib/nuvio-client'
+import { readJsonLimited, RequestJsonError } from '../../../../lib/request-json'
 
 function cleanAddon(x: any, i: number) {
   return {
@@ -54,7 +55,7 @@ function verifyCatalogSettings(expected: any, actual: any) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
+    const body = await readJsonLimited(req, 8_000_000)
     const token = String(body?.token || '')
     const profileId = Number(body?.profileId)
     const kind = String(body?.kind || '')
@@ -156,6 +157,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: 'Operação não suportada.' }, { status: 400 })
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || 'Falha ao salvar alterações.' }, { status: 502 })
+    return NextResponse.json({ error: e?.message || 'Falha ao salvar alterações.' }, { status: e instanceof RequestJsonError ? e.status : 502 })
   }
 }

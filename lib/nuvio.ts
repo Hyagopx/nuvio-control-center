@@ -40,6 +40,12 @@ export type ProfileRecord = {
   watchProgress: any[]
   watchedItems: any[]
   library: any[]
+  libraryLoaded?: boolean
+  libraryHasMore?: boolean
+  libraryPage?: number
+  watchedItemsLoaded?: boolean
+  watchedItemsHasMore?: boolean
+  watchedItemsPage?: number
   catalogSettings: CatalogSettings | null
 }
 
@@ -102,6 +108,12 @@ export function normalizeProfile(p: any, index: number): ProfileRecord {
     watchProgress: arr(p?.watchProgress),
     watchedItems: arr(p?.watchedItems),
     library: arr(p?.library),
+    libraryLoaded: typeof p?.libraryLoaded === 'boolean' ? p.libraryLoaded : true,
+    libraryHasMore: p?.libraryHasMore === true,
+    libraryPage: Number(p?.libraryPage) || 0,
+    watchedItemsLoaded: typeof p?.watchedItemsLoaded === 'boolean' ? p.watchedItemsLoaded : true,
+    watchedItemsHasMore: p?.watchedItemsHasMore === true,
+    watchedItemsPage: Number(p?.watchedItemsPage) || 0,
     catalogSettings: normalizeCatalogSettings(p?.catalogSettings),
   }
 }
