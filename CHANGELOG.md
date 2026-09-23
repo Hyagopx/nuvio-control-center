@@ -1,3 +1,7 @@
+# Nuvio Control Center v0.11.1 — Build Fix: URLs do Diagnóstico
+
+- O filtro dos endereços de addon agora estreita explicitamente o tipo para `string`, corrigindo o erro TypeScript no build da Vercel.
+
 # Nuvio Control Center v0.11 — Diagnóstico por Perfil
 
 ## Diagnóstico independente por perfil

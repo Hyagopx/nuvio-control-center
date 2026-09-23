@@ -1,4 +1,4 @@
-# Nuvio Control Center v0.11 — Diagnóstico por Perfil
+# Nuvio Control Center v0.11.1 — Build Fix: URLs do Diagnóstico
 
 Painel pessoal para administrar perfis, addons, catálogos, plugins, coleções, progresso e biblioteca do Nuvio.
 

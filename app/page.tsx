@@ -272,7 +272,7 @@ export default function Home() {
   }
 
   async function diagnose(rows: Addon[], onlyMissing = false) {
-    const urls = rows.map(x => x.url).filter(Boolean); if (!urls.length) return
+    const urls = rows.map(x => x.url).filter((url): url is string => typeof url === 'string' && url.length > 0); if (!urls.length) return
     const profileKey = activeProfileKey
     if (diagnosticRunsRef.current.has(profileKey)) return
     const existing = diagnosticsByProfile[profileKey] || {}
