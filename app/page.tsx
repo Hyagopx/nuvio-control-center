@@ -198,7 +198,7 @@ export default function Home() {
     } catch (e: any) { setError(e.message || 'Erro') } finally { setLoading(false) }
   }
 
-  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.9', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
+  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.11.4', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
   function persistSnapshot(customInv = inv, label = '') {
     if (!customInv) return false
     const partialSections=partialSectionsFor(customInv)
@@ -226,7 +226,7 @@ export default function Home() {
   function downloadTransferPackage(parts: Record<string,boolean>) {
     if (!inv) return
     const source = p
-    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.9', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
+    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.11.4', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
     const b = new Blob([JSON.stringify(packageData,null,2)], {type:'application/json'}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`nuvio-transfer-${String(profileLabel).replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(u),500)
   }
   function openTransferPackage(file: File) {
@@ -801,7 +801,7 @@ function TransferImportModal({pkg,close,onApply,saving}:any){
 }
 function labelPart(k:string){return ({addons:'Addons',plugins:'Plugins',collections:'Coleções',catalogs:'Catálogos',library:'Biblioteca',watchProgress:'Progresso',watchedItems:'Histórico de assistidos',progress:'Progresso',history:'Histórico'} as any)[k]||k}
 function persistTransferSnapshot(inv:Inventory){const existing=JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]');existing.unshift({...makeLocalSnapshot(inv),label:'backup automático da conta destino'});localStorage.setItem('nuvio-snapshots',JSON.stringify(existing.slice(0,30)))}
-function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.9',inventory:inv}}
+function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.11.4',inventory:inv}}
 
 function AddonProfileTransferModal({item,sourceIndex,profiles,catalogPreferenceCount,saving,dirty,close,onCopy}:any){
  const [selected,setSelected]=useState<number[]>([]),[includeSettings,setIncludeSettings]=useState(true)

@@ -1,3 +1,10 @@
+# Nuvio Control Center v0.11.4 — Reorganização e Documentação do Repositório
+
+- README reescrito para refletir a aplicação web atual, sua stack e seus fluxos.
+- Adicionados guias de arquitetura, rotas da API, desenvolvimento e contribuição.
+- Removida a cópia órfã `page.txt`, que continha código de uma versão antiga sem participação no build.
+- Atualizada a identificação de versão nos snapshots e pacotes de transferência novos.
+
 # Nuvio Control Center v0.11.3 — Corrigir URLs Raiz dos Addons
 
 - A montagem de URLs de manifesto e catálogo agora altera diretamente o caminho da URL, evitando `//manifest.json` para addons instalados na raiz do domínio.
