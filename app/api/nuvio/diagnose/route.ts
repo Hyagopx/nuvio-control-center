@@ -107,11 +107,15 @@ function finishHealth(manifestOk: boolean, latencyMs: number, catalogs: any[], t
   if (!manifestOk) { health = 'fail'; healthReason = 'Manifesto indisponível' }
   else if (tests.some(x => x.pending)) { health = 'unknown'; healthReason = 'Catálogos ainda sendo verificados' }
   else if (allCatalogsFailed) { health = 'attention'; healthReason = 'Manifesto disponível, mas os endpoints de catálogo testados não responderam' }
-  else if (unverified) { health = 'attention'; healthReason = `${unverified} catálogo(s) não verificáveis sem parâmetros ou formato de resposta compatível` }
   else if (slow || slowCatalogs.length || failed.length) { health = 'attention'; healthReason = failed.length ? `${failed.length} catálogo(s) não responderam` : 'Resposta lenta' }
   else if (!catalogs.length) { health = 'attention'; healthReason = 'Manifesto disponível, sem catálogos declarados' }
-  else if (analysis?.warnings?.length) { health = 'attention'; healthReason = `${analysis.warnings.length} alerta(s) no manifesto; alguns dados/capacidades podem não ser verificáveis` }
-  else { health = 'healthy'; healthReason = 'Manifesto e catálogos testados disponíveis' }
+  else if (tested.length > 0) {
+    health = 'healthy'
+    const notes = [unverified ? `${unverified} não verificável(is)` : '', analysis?.warnings?.length ? `${analysis.warnings.length} alerta(s) de protocolo` : ''].filter(Boolean)
+    healthReason = `Manifesto disponível e ${tested.length} catálogo(s) testado(s) responderam${notes.length ? `; ${notes.join(', ')}` : ''}`
+  }
+  else if (unverified || analysis?.warnings?.length) { health = 'unknown'; healthReason = `Manifesto disponível; catálogos não verificáveis sem parâmetros${analysis?.warnings?.length ? `; ${analysis.warnings.length} alerta(s) informativo(s)` : ''}` }
+  else { health = 'unknown'; healthReason = 'Manifesto disponível, mas nenhum catálogo pôde ser confirmado' }
   return { health, healthReason, summary: { catalogs: catalogs.length, tested: tested.length, failed: failed.length, unverified, warnings: analysis?.warnings?.length || 0, slow: slowCatalogs.length, searchOnly: catalogs.filter(isSearchOnly).length, searchCapable: catalogs.filter(supportsSearch).length } }
 }
 
