@@ -1,3 +1,16 @@
+# Nuvio Control Center v0.11 — Diagnóstico por Perfil
+
+## Diagnóstico independente por perfil
+
+- Os resultados do diagnóstico agora ficam separados pelo índice de cada perfil.
+- Voltar a um perfil mantém os resultados já obtidos, sem repetir as consultas.
+- A primeira entrada em um perfil diagnostica apenas addons sem resultado; addons adicionados depois também são detectados.
+- O botão de atualização continua refazendo o diagnóstico dos addons do perfil atual.
+- Progresso e estado de carregamento também são separados por perfil.
+- Respostas de uma sessão encerrada são descartadas para não misturar diagnósticos de contas diferentes.
+- Navegadores ou conexões que não conseguem consumir o fluxo progressivo podem concluir o diagnóstico pela resposta JSON.
+- Falhas de manifesto agora mostram o motivo técnico retornado pela consulta, facilitando identificar erros específicos de rede ou resposta.
+
 # Nuvio Control Center v0.10 — Core Stable
 
 ## Revisão do Core

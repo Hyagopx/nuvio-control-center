@@ -139,6 +139,7 @@ async function runAddon(raw: string, emit: (result: any, phase: string) => void)
 
   if (!manifest.ok) {
     const state = finishHealth(false, manifest.latencyMs, catalogs, catalogTests)
+    if (manifest.error) state.healthReason = `Manifesto indisponível: ${manifest.error}`
     emit({ ...base, ...state, catalogTests }, 'complete')
     return
   }
@@ -170,6 +171,21 @@ export async function POST(req: NextRequest) {
   try { body = await readJsonLimited(req, 64_000) } catch (e:any) { return NextResponse.json({ error: e.message || 'Corpo JSON inválido.' }, { status: e instanceof RequestJsonError ? e.status : 400 }) }
   if (!Array.isArray(body?.urls)) return NextResponse.json({ error: 'urls deve ser um array.' }, { status: 400 })
   const unique: string[] = Array.from(new Set<string>(body.urls.filter((x: any): x is string => typeof x === 'string' && /^https?:\/\//i.test(x)))).slice(0, 50)
+  if (body?.stream === false) {
+    const results: Record<string, any> = {}
+    let cursor = 0
+    await Promise.all(Array.from({ length: Math.min(5, unique.length) }, async () => {
+      while (cursor < unique.length) {
+        const raw = unique[cursor++]
+        try {
+          await runAddon(raw, (result, phase) => { results[raw] = { ...result, phase } })
+        } catch (error: any) {
+          results[raw] = { url: raw, phase: 'complete', ok: false, health: 'fail', healthReason: error?.message || 'Falha no diagnóstico', error: error?.message || 'Falha no diagnóstico', manifest: null, catalogTests: [], summary: { catalogs: 0, tested: 0, failed: 0, slow: 0, searchOnly: 0, searchCapable: 0 } }
+        }
+      }
+    }))
+    return NextResponse.json({ results: Object.values(results) }, { headers: { 'Cache-Control': 'no-store' } })
+  }
   const encoder = new TextEncoder()
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {

@@ -1,4 +1,4 @@
-# Nuvio Control Center v0.10 — Core Stable
+# Nuvio Control Center v0.11 — Diagnóstico por Perfil
 
 Painel pessoal para administrar perfis, addons, catálogos, plugins, coleções, progresso e biblioteca do Nuvio.
 
