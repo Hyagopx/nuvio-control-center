@@ -254,3 +254,37 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .copy-settings-option small{grid-column:2;color:#92929c;font-size:11px}
 .transfer-warning{padding:10px;border:1px solid #6d5120;border-radius:8px;background:#2b2312;color:#e8c879;font-size:12px}
 @media(max-width:520px){.addon-profile-target{grid-template-columns:20px minmax(0,1fr);}.addon-profile-target small{grid-column:2}.manifest-analysis{padding:11px}}
+
+/* Addon list: a quiet desktop list, with a single-column card treatment on phones. */
+@media(min-width:681px){
+  .addon-list-panel{overflow:hidden}
+  .addon-card-table table{border-spacing:0}
+  .addon-card-table thead tr,.addon-card-table tbody tr{grid-template-columns:minmax(170px,2fr) minmax(74px,.6fr) minmax(78px,.7fr) minmax(170px,1.65fr) minmax(110px,1fr) minmax(108px,.95fr);gap:8px}
+  .addon-card-table thead th,.addon-card-table tbody td{padding:9px 6px;min-height:58px}
+  .addon-card-table thead th:nth-child(2){font-size:9px;letter-spacing:.05em}
+  .addon-card-table thead th:nth-child(2),.addon-card-table tbody td:nth-child(2),.addon-card-table thead th:nth-child(3),.addon-card-table tbody td:nth-child(3),.addon-card-table thead th:nth-child(5),.addon-card-table tbody td:nth-child(5){justify-content:center}
+  .addon-card-table thead th:nth-child(5),.addon-card-table tbody td.addon-order-cell,.addon-card-table tbody td:last-child{padding-left:3px;padding-right:3px}
+  .addon-card-table tbody tr{margin:0;border:0;border-bottom:1px solid #292d34;border-radius:0;background:transparent;box-shadow:none}
+  .addon-card-table tbody tr:hover{background:#191b20;border-color:#343840}
+  .addon-card-table tbody tr:last-child{border-bottom:0}
+  .addon-order-controls{gap:2px}
+  .order-step{flex-basis:26px;width:26px;height:32px;font-size:14px}
+  .addon-order-controls .order-input{width:42px}
+  .addon-card-table .row-actions{justify-content:flex-end;flex-wrap:nowrap;gap:4px}
+  .addon-card-table .row-action{min-width:0;min-height:32px;padding:5px 6px;font-size:10px}
+  .health-breakdown{font-size:10px}
+}
+@media(min-width:681px) and (max-width:1100px){
+  .addon-card-table thead tr,.addon-card-table tbody tr{grid-template-columns:minmax(140px,1.8fr) minmax(72px,.55fr) minmax(72px,.65fr) minmax(150px,1.45fr) minmax(106px,1fr) minmax(102px,.9fr);gap:6px}
+  .addon-card-table thead th,.addon-card-table tbody td{padding-left:4px;padding-right:4px}
+  .addon-order-controls .order-input{width:38px}
+  .order-step{flex-basis:25px;width:25px}
+  .addon-card-table .row-action{padding-left:5px;padding-right:5px;font-size:9px}
+}
+@media(max-width:680px){
+  .addon-list-panel{overflow:visible;border:0;background:transparent;box-shadow:none}
+  .addon-list-panel .table-scroll{padding:0}
+  .addon-card-table table{border-spacing:0 10px}
+  .addon-card-table tbody tr{margin:0;background:#191b20;border:1px solid #30343c;border-radius:14px;box-shadow:0 5px 15px #0002}
+  .addon-card-table tbody tr:hover{background:#1d2026;border-color:#3a3e48}
+}
