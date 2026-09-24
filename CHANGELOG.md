@@ -1,4 +1,4 @@
-# Nuvio Control Center v0.11.5 — Identidade Visual e Créditos
+# Nuvio Control Center v0.11.5 — Identidade Visual
 
 - Adicionado um ícone vetorial inspirado na marca Nuvio para a aba e instalação como app.
 - Incluída a marca junto ao nome no painel e na tela de entrada.
