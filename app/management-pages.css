@@ -114,6 +114,11 @@
 .diagnostic-summary .amber-dot { background: var(--color-warning); }
 .diagnostic-summary .red-dot { background: var(--color-danger); }
 
+@media (min-width: 821px) {
+  .diagnostic-summary { display:grid; grid-template-columns:repeat(4,minmax(max-content,1fr)); align-items:center; }
+  .diagnostic-summary > span { white-space:nowrap; }
+}
+
 .addon-health-banner { display:flex; align-items:flex-start; gap:.8rem; padding:.9rem 1rem; border:1px solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); }
 .addon-health-banner > span { display:grid; place-items:center; flex:0 0 2rem; width:2rem; height:2rem; border-radius:50%; font-weight:800; background:color-mix(in srgb,var(--color-text-muted) 15%,transparent); }
 .addon-health-banner.healthy > span { color:var(--color-positive); background:color-mix(in srgb,var(--color-positive) 13%,transparent); }

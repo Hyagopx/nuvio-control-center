@@ -116,21 +116,35 @@ button:disabled { cursor: not-allowed; }
 }
 
 @media (max-width: 680px) {
+  .addon-list-panel { container-type: inline-size; }
   .addon-card-table table { border-spacing: 0 0.55rem; }
-  .addon-card-table tbody tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0.55rem 0.75rem; padding: 0.75rem; }
+  .addon-card-table tbody tr { grid-template-columns: minmax(0, 1.45fr) minmax(4.5rem, 0.75fr) minmax(5.5rem, 0.85fr); gap: 0.7rem 0.85rem; padding: 0.85rem; }
   .addon-card-table tbody td { min-height: 0; gap: 0.25rem; font-size: var(--font-size-xs); }
-  .addon-card-table tbody td:nth-child(1), .addon-card-table tbody td:nth-child(4), .addon-card-table tbody td:nth-child(5), .addon-card-table tbody td:last-child { grid-column: 1 / -1; }
-  .addon-card-table tbody td:nth-child(2), .addon-card-table tbody td:nth-child(3) { grid-column: auto; }
-  .addon-card-table tbody td:nth-child(4) { display: flex; padding: 0; }
+  .addon-card-table tbody td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .addon-card-table tbody td:nth-child(2) { grid-column: 2; grid-row: 1; }
+  .addon-card-table tbody td:nth-child(3) { grid-column: 3; grid-row: 1; }
+  .addon-card-table tbody td:nth-child(4) { display: block; grid-column: 1 / -1; grid-row: 2; padding: 0; line-height: 1.4; }
+  .addon-card-table tbody td.addon-order-cell { grid-column: 1; grid-row: 3; }
+  .addon-card-table tbody td:last-child { grid-column: 2 / -1; grid-row: 3; display: flex; align-items: flex-end; }
   .addon-card-table .item-name { font-size: 0.95rem; line-height: 1.3; }
-  .addon-card-table .health-breakdown, .addon-card-table .health-reason { display: none; }
-  .addon-card-table tbody td.addon-order-cell { display: flex; grid-column: 1 / -1; align-items: center; gap: 0.6rem; }
+  .addon-card-table .health-breakdown { display: none; }
+  .addon-card-table tbody td.addon-order-cell { display: flex; flex-direction: row; align-items: center; gap: 0.6rem; }
   .addon-card-table .addon-order-controls { gap: 0.35rem; }
   .addon-card-table .addon-order-controls .order-input { width: 3rem; min-height: 2.25rem; height: 2.25rem; }
   .addon-card-table .order-step { flex-basis: 2.25rem; width: 2.25rem; height: 2.25rem; }
-  .addon-card-table tbody td:last-child { display: flex; align-items: center; }
-  .addon-card-table .row-actions { display: flex; flex-wrap: nowrap; justify-content: flex-start; gap: 0.45rem; }
+  .addon-card-table .row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.45rem; }
   .addon-card-table .row-action { min-height: 2.25rem; padding: 0.4rem 0.7rem; font-size: var(--font-size-xs); }
+}
+
+@container (max-width: 440px) {
+  .addon-card-table tbody tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .addon-card-table tbody td:nth-child(1) { grid-column: 1 / -1; grid-row: 1; }
+  .addon-card-table tbody td:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .addon-card-table tbody td:nth-child(3) { grid-column: 2; grid-row: 2; }
+  .addon-card-table tbody td:nth-child(4) { grid-column: 1 / -1; grid-row: 3; }
+  .addon-card-table tbody td.addon-order-cell { grid-column: 1 / -1; grid-row: 4; }
+  .addon-card-table tbody td:last-child { grid-column: 1 / -1; grid-row: 5; }
+  .addon-card-table .row-actions { justify-content: flex-end; }
 }
 
 @media (prefers-reduced-motion: reduce) {
