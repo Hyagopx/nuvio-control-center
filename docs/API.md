@@ -9,7 +9,7 @@ As rotas são handlers do Next.js em `app/api`. Os exemplos abaixo descrevem a f
 | `/api/nuvio/inventory` | POST | Busca dados da conta Nuvio usando `token`: perfis, addons, plugins, coleções, progresso e configurações. |
 | `/api/nuvio/profile-data` | POST | Lê `token`, `profileId`, `kind` (`library` ou `history`) e `page`; retorna página de dados (até 100 itens). |
 | `/api/nuvio/mutate` | POST | Grava alterações usando `token`, `profileId`, `kind` e os dados da operação. `kind: "profile-delete"` exclui um perfil secundário; alterações de catálogo são verificadas por nova leitura. |
-| `/api/nuvio/diagnose` | POST | Diagnostica URLs de addons. Por padrão pode transmitir eventos SSE; `stream: false` solicita JSON. |
+| `/api/nuvio/diagnose` | POST | Lê manifestos de addons via SSE ou JSON (`stream: false`). Com `action: "check-catalogs"`, verifica apenas os `catalogIds` escolhidos pelo usuário. |
 | `/api/nuvio/addon-preview` | POST | Obtém uma prévia dos manifestos informados em `urls`. |
 | `/api/nuvio/resolve-watch` | POST | Tenta resolver metadados de reprodução a partir de `addons` e `items`. |
 | `/api/import-url` | POST | Importa JSON de uma `url` remota validada. |

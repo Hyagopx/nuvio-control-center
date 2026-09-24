@@ -46,7 +46,7 @@ flowchart LR
 1. A interface autentica o usuário pelas rotas `/api/nuvio/sign-in` e `/api/nuvio/refresh`.
 2. `/api/nuvio/inventory` carrega os perfis e seus dados principais. Biblioteca e histórico podem ser carregados sob demanda por `/api/nuvio/profile-data`.
 3. Ações de manutenção enviam mudanças a `/api/nuvio/mutate`. Alterações de catálogo são relidas e comparadas antes de serem consideradas salvas.
-4. O diagnóstico consulta manifestos e catálogos dos addons no servidor. A rota transmite progresso por SSE e oferece resposta JSON para clientes que não conseguem consumir o fluxo.
+4. O diagnóstico automático consulta os manifestos dos addons e lê a lista de catálogos declarada, sem chamar seus endpoints. A pessoa pode iniciar testes manuais de um ou vários catálogos na tela de detalhes do addon. As URLs são consultadas no servidor por `safe-external-fetch`.
 5. Importações e diagnósticos de URL usam `safe-external-fetch`; destinos privados, redirecionamentos inseguros e respostas acima dos limites são rejeitados.
 
 ## Limites de confiança

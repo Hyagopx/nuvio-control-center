@@ -114,6 +114,45 @@
 .diagnostic-summary .amber-dot { background: var(--color-warning); }
 .diagnostic-summary .red-dot { background: var(--color-danger); }
 
+.addon-health-banner { display:flex; align-items:flex-start; gap:.8rem; padding:.9rem 1rem; border:1px solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); }
+.addon-health-banner > span { display:grid; place-items:center; flex:0 0 2rem; width:2rem; height:2rem; border-radius:50%; font-weight:800; background:color-mix(in srgb,var(--color-text-muted) 15%,transparent); }
+.addon-health-banner.healthy > span { color:var(--color-positive); background:color-mix(in srgb,var(--color-positive) 13%,transparent); }
+.addon-health-banner.attention > span { color:var(--color-warning); background:color-mix(in srgb,var(--color-warning) 13%,transparent); }
+.addon-health-banner.fail > span { color:var(--color-danger); background:color-mix(in srgb,var(--color-danger) 13%,transparent); }
+.addon-health-banner p { margin:.25rem 0 0; color:var(--color-text-muted); line-height:1.5; }
+.addon-diagnostic-tabs { display:flex; gap:.35rem; overflow-x:auto; border-bottom:1px solid var(--color-border); scrollbar-width:thin; }
+.addon-diagnostic-tabs button { flex:0 0 auto; min-height:44px; padding:.55rem .8rem; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--color-text-muted); cursor:pointer; }
+.addon-diagnostic-tabs button.active { border-bottom-color:var(--color-accent); color:var(--color-text); }
+.addon-tab-panel { display:flex; flex-direction:column; gap:.8rem; min-width:0; }
+.addon-summary-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.55rem; }
+.addon-summary-grid > div { display:flex; flex-direction:column; gap:.3rem; min-width:0; padding:.7rem; border:1px solid var(--color-border); border-radius:var(--radius-sm); overflow-wrap:anywhere; }
+.addon-summary-grid span,.addon-catalog-info span { color:var(--color-text-muted); font-size:var(--font-size-xs); }
+.addon-plain-note,.addon-next-step { margin:0; padding:.8rem; border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-text-muted); line-height:1.5; }
+.addon-next-step { display:flex; flex-direction:column; gap:.25rem; border:1px solid color-mix(in srgb,var(--color-warning) 35%,var(--color-border)); }
+.catalog-check-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:.65rem; padding:.65rem; border:1px solid var(--color-border); border-radius:var(--radius-sm); }
+.catalog-check-toolbar label { display:flex; align-items:center; gap:.5rem; min-height:44px; }
+.catalog-check-toolbar span { color:var(--color-text-muted); font-size:var(--font-size-xs); }
+.catalog-check-toolbar button { margin-left:auto; min-height:42px; }
+.addon-catalog-cards { display:flex; flex-direction:column; gap:.55rem; }
+.addon-catalog-card { display:grid; grid-template-columns:auto minmax(0,1fr) minmax(10rem,1fr) auto; align-items:center; gap:.7rem; min-width:0; padding:.75rem; border:1px solid var(--color-border); border-radius:var(--radius-sm); background:var(--color-surface); }
+.addon-catalog-card > label { display:grid; place-items:center; min-width:44px; min-height:44px; }
+.addon-catalog-info,.addon-catalog-result { display:flex; flex-direction:column; gap:.25rem; min-width:0; overflow-wrap:anywhere; }
+.addon-catalog-result > span { color:var(--color-text-muted); font-size:var(--font-size-xs); line-height:1.45; }
+.addon-catalog-card > button { min-height:42px; }
+.addon-catalog-result details summary { min-height:36px; display:flex; align-items:center; cursor:pointer; color:var(--color-text-muted); font-size:var(--font-size-xs); }
+.addon-catalog-result details small { overflow-wrap:anywhere; }
+.addon-tab-panel .manifest-raw pre { max-height:55dvh; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+.addon-tab-panel .manifest-capabilities { display:flex; flex-wrap:wrap; gap:.45rem; }
+.addon-tab-panel .manifest-capabilities span { padding:.45rem .6rem; border:1px solid var(--color-border); border-radius:var(--radius-sm); overflow-wrap:anywhere; }
+.addon-tab-panel .manifest-parameters,.addon-tab-panel .manifest-warning-list { display:flex; flex-direction:column; gap:.45rem; }
+
+.health-breakdown,.health-reason { display:block; line-height:1.4; }
+.plugin-edit-modal { max-width:34rem; }
+.plugin-edit-modal .form-label small { color:var(--color-text-muted); line-height:1.45; }
+.plugin-edit-modal .modal-actions button { min-height:44px; }
+.personal-data-page .drawer-actions { display:flex; flex-wrap:wrap; }
+.personal-data-page .drawer-actions button { min-height:44px; }
+
 .management-list-panel,
 .addon-list-panel {
   min-width: 0;
@@ -405,6 +444,16 @@
   .personal-data-page .trakt-actions { grid-column: auto; }
   .personal-data-page .trakt-actions button { flex: 1 1 9rem; }
   .personal-data-page .watch-group-head { padding: 0.85rem 0.9rem; }
+  .addon-diagnostic-tabs { margin-inline:-.25rem; }
+  .addon-diagnostic-tabs button { padding-inline:.65rem; font-size:var(--font-size-xs); }
+  .addon-summary-grid { grid-template-columns:minmax(0,1fr); }
+  .catalog-check-toolbar { align-items:stretch; }
+  .catalog-check-toolbar label { flex:1 1 100%; }
+  .catalog-check-toolbar button { width:100%; margin-left:0; }
+  .addon-catalog-card { grid-template-columns:auto minmax(0,1fr); align-items:start; }
+  .addon-catalog-info { padding-top:.55rem; }
+  .addon-catalog-result { grid-column:2; }
+  .addon-catalog-card > button { grid-column:2; width:100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

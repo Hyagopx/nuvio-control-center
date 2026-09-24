@@ -12,7 +12,7 @@ Requisitos: Node.js `>=20.9.0` e npm.
 
 ## Princípio de segurança
 
-O painel não assume que um endpoint não testável significa que um addon está quebrado. Um manifesto válido é evidência de que o addon foi encontrado; os testes de catálogo são evidência separada.
+O diagnóstico automático lê o manifesto e lista os catálogos declarados, sem consultar cada catálogo. O usuário pode iniciar manualmente o teste de um, vários ou todos os catálogos. Uma falha observada é um retrato daquela tentativa, não uma garantia de indisponibilidade permanente.
 
 ## Sessão e dados
 
@@ -90,7 +90,7 @@ Veja [a arquitetura](docs/ARCHITECTURE.md) para o mapa completo e [a referência
 
 - Um manifesto válido confirma que o addon respondeu. Testes de catálogo são avaliados separadamente.
 - Catálogos que exigem parâmetros ou busca não são declarados falhos por uma requisição sem esses parâmetros.
-- Metadata e Streams podem aparecer como declarados, mas não são testados pelo diagnóstico atual.
+- Metadata e Streams são identificados como recursos declarados pelo addon; o painel não testa esses serviços.
 - A Cloud do Nuvio não expõe controle separado para ativar cada catálogo de busca; essa área é informativa no painel.
 - Diagnósticos são dados observados no momento da consulta. Erros HTTP 503 e timeouts podem refletir a disponibilidade/regras do host do addon.
 

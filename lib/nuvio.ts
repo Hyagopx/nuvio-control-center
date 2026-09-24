@@ -312,6 +312,22 @@ export function mediaType(x: any): string {
   return String(getField(x, ['type','media_type','mediaType','kind'], '') || (x?.series || x?.show ? 'series' : 'movie')).toLowerCase()
 }
 
+export function watchRecordMatches(a: any, b: any): boolean {
+  const ids = (x: any) => ['content_id','contentId','video_id','videoId','watch_id','watchId','progress_id','progressId','id','uuid']
+    .map(key => x?.[key]).filter(v => v !== undefined && v !== null && String(v).trim()).map(v => String(v).trim().toLowerCase())
+  const left = new Set(ids(a)), right = ids(b)
+  if (right.some(id => left.has(id))) return true
+  const title = (x: any) => mediaTitle(x).trim().toLocaleLowerCase()
+  const field = (x: any, keys: string[]) => keys.map(key => x?.[key]).find(v => v !== undefined && v !== null && String(v).trim() !== '')
+  const leftTitle = title(a), rightTitle = title(b)
+  if (!leftTitle || leftTitle !== rightTitle) return false
+  const leftSeason = field(a, ['season','season_number','seasonNumber'])
+  const rightSeason = field(b, ['season','season_number','seasonNumber'])
+  const leftEpisode = field(a, ['episode','episode_number','episodeNumber'])
+  const rightEpisode = field(b, ['episode','episode_number','episodeNumber'])
+  return String(leftSeason ?? '') === String(rightSeason ?? '') && String(leftEpisode ?? '') === String(rightEpisode ?? '')
+}
+
 export function seriesKey(x: any): string {
   const season = getField(x, ['season','season_number','seasonNumber'], undefined)
   const episode = getField(x, ['episode','episode_number','episodeNumber'], undefined)
