@@ -7,7 +7,8 @@ import {
   type Addon, type CatalogSettings, type Inventory, type ProfileRecord,
 } from '../lib/nuvio'
 import { changedSections, describeSections, findProfile, findProfileIndex, planSave, sameProfiles, verifySavedSections, type WritableSection } from '../lib/sync-safety'
-import { readLocalSnapshots, storeLocalSnapshot } from '../lib/local-snapshots'
+import { LEGACY_SNAPSHOT_STORAGE_KEY, readIndexedSnapshots, readLocalSnapshots, storeIndexedSnapshot, storeLocalSnapshot } from '../lib/local-snapshots'
+import { parseJsonFile, parseLegacySnapshots, serializeJsonBlob } from '../lib/browser-json'
 import { LibraryPage, WatchPage } from '../components/screens/ProfileDataScreens'
 import { Brand } from '../components/ui/Brand'
 import { Icon, type IconName } from '../components/ui/Icon'
@@ -64,8 +65,9 @@ export default function Home() {
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<any | null>(null)
   const [snapshotOpen, setSnapshotOpen] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
   const [compare, setCompare] = useState<Inventory | null>(null)
+  const [snapshotCount, setSnapshotCount] = useState(0)
+  const [backupStatus, setBackupStatus] = useState('')
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [profileModal, setProfileModal] = useState(false)
@@ -197,9 +199,10 @@ export default function Home() {
   }
   async function fetchInventory(accessToken = token) { if (!accessToken) throw new Error('Sessão Nuvio não disponível.'); return fetchInventoryStatic(accessToken) }
 
-  async function fetchAllProfileData(kind:'library'|'history', id:number) {
+  async function fetchAllProfileData(kind:'library'|'history', id:number, report:(message:string)=>void=()=>{}) {
     const all:any[]=[]
     for(let page=1;page<=500;page++){
+      report(`Carregando ${kind==='library'?'biblioteca':'histórico'} · página ${page}…`)
       const response=await fetch('/api/nuvio/profile-data',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:id,kind,page})})
       const data=await response.json();if(!response.ok)throw new Error(data.error||`Falha ao exportar ${kind}.`)
       all.push(...data.items)
@@ -208,13 +211,14 @@ export default function Home() {
     throw new Error(`O limite de páginas foi atingido ao exportar ${kind}.`)
   }
 
-  async function completeInventoryForBackup(source:Inventory) {
+  async function completeInventoryForBackup(source:Inventory, report:(message:string)=>void=()=>{}) {
     if(!token)return source
     const profiles=[]
     for(const record of source.profiles){
       const next={...record}
-      if(next.libraryLoaded===false){next.library=await fetchAllProfileData('library',profileId(record));next.libraryLoaded=true;next.libraryPage=Math.ceil(next.library.length/100);next.libraryHasMore=false}
-      if(next.watchedItemsLoaded===false){next.watchedItems=await fetchAllProfileData('history',profileId(record));next.watchedItemsLoaded=true;next.watchedItemsPage=Math.ceil(next.watchedItems.length/100);next.watchedItemsHasMore=false}
+      const name=String(record.profile?.name||`Perfil ${profileId(record)}`)
+      if(next.libraryLoaded===false){report(`Coletando biblioteca de ${name}…`);next.library=await fetchAllProfileData('library',profileId(record),report);next.libraryLoaded=true;next.libraryPage=Math.ceil(next.library.length/100);next.libraryHasMore=false}
+      if(next.watchedItemsLoaded===false){report(`Coletando histórico de ${name}…`);next.watchedItems=await fetchAllProfileData('history',profileId(record),report);next.watchedItemsLoaded=true;next.watchedItemsPage=Math.ceil(next.watchedItems.length/100);next.watchedItemsHasMore=false}
       profiles.push(next)
     }
     return {...source,profiles}
@@ -264,45 +268,84 @@ export default function Home() {
   }
 
   function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.12.0', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
-  function persistSnapshot(customInv = inv, label = '') {
+  async function storeComparisonSnapshot(snapshot:any) {
+    try { return await storeIndexedSnapshot(snapshot) }
+    catch { const result=storeLocalSnapshot(localStorage,snapshot);if(!result.saved)throw new Error('O navegador não conseguiu guardar o ponto local. Exporte um backup para manter uma cópia.');return{count:result.count} }
+  }
+  async function persistSnapshot(customInv = inv, label = '') {
     if (!customInv) return false
     const partialSections=partialSectionsFor(customInv)
-    return storeLocalSnapshot(localStorage, { ...makeSnapshot(customInv), label, partialSections }).saved
+    try { const result=await storeComparisonSnapshot({ ...makeComparisonSnapshot(customInv), label, partialSections });setSnapshotCount(result.count);return true }
+    catch { return false }
   }
   function partialSectionsFor(customInv:Inventory) { return customInv.profiles.flatMap(profile=>[
       ...(profile.libraryLoaded===false?[`library:${profileId(profile)}`]:[]),
       ...(profile.watchedItemsLoaded===false?[`watchedItems:${profileId(profile)}`]:[]),
     ]) }
-  async function saveSnapshotLocal() { if (!inv) return; setNotice('Preparando backup local…'); try { const complete=await completeInventoryForBackup(inv), partial=partialSectionsFor(complete), result=storeLocalSnapshot(localStorage,{...makeSnapshot(complete),label:'backup manual',partialSections:partial}); setNotice(!result.saved?'O navegador não tem espaço livre para guardar este backup. Exporte um arquivo para manter uma cópia.':partial.length?'Backup local salvo, mas é parcial porque alguns dados não estão disponíveis nesta sessão.':'Backup local completo salvo no navegador.') } catch(e:any) { setNotice(e.message||'Não foi possível concluir o backup local.') } setSnapshotOpen(true) }
+  async function saveSnapshotLocal() {
+    if (!inv) return
+    setBackupStatus('Salvando um ponto de comparação local…')
+    setSnapshotOpen(true)
+    setCompare(null)
+    try {
+      const partial=partialSectionsFor(inv)
+      const result=await storeComparisonSnapshot({...makeComparisonSnapshot(inv),label:'ponto de comparação',partialSections:partial})
+      setSnapshotCount(result.count)
+      setNotice(partial.length?'Ponto de comparação salvo. Biblioteca ou histórico ainda não carregados ficam indicados como parciais.':'Ponto de comparação local salvo.')
+    } catch(e:any) { setNotice(e.message||'Não foi possível salvar o ponto de comparação local.') }
+    finally { setBackupStatus('') }
+  }
   async function downloadSnapshot(customInv = inv) {
     if (!customInv) return
-    try { const complete=await completeInventoryForBackup(customInv); const partial=partialSectionsFor(complete); const b = new Blob([JSON.stringify({...makeSnapshot(complete),partialSections:partial}, null, 2)], { type: 'application/json' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = `nuvio-backup-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 500); if(partial.length)setNotice('Backup exportado parcialmente; ele indica os dados que não estavam carregados.') } catch(e:any) { setError(e.message||'Falha ao exportar backup completo.') }
+    setBackupStatus('Preparando backup completo…')
+    try { const complete=await completeInventoryForBackup(customInv,setBackupStatus); const partial=partialSectionsFor(complete); setBackupStatus('Montando arquivo de backup…'); const b=await serializeJsonBlob({...makeSnapshot(complete),partialSections:partial},2); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = `nuvio-backup-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 1000); if(partial.length)setNotice('Backup exportado parcialmente; ele indica os dados que não estavam carregados.') } catch(e:any) { setError(e.message||'Falha ao exportar backup completo.') } finally { setBackupStatus('') }
   }
-  function importSnapshot(file: File) {
-    const reader = new FileReader(); reader.onload = () => { try { const raw = JSON.parse(String(reader.result)); const data = normalizeInventory(raw?.inventory?.profiles ? raw.inventory : raw); serverBaselineRef.current = null; setInv(data); setToken(''); localStorage.removeItem('nuvio-session'); void fetch('/api/nuvio/logout',{method:'POST'}); setEmail(''); setActive(0); setTab('overview'); setSelected(null); setImportOpen(false); setDirty(false); setError(''); setNotice('Backup aberto somente para consulta. Ele não altera a conta.'); } catch (e: any) { setError(e.message || 'Backup inválido.') } }; reader.readAsText(file)
+  async function importSnapshot(file: File) {
+    setBackupStatus('Lendo backup em segundo plano…')
+    try { const raw=await parseJsonFile(file); const data = normalizeInventory(raw?.inventory?.profiles ? raw.inventory : raw); serverBaselineRef.current = null; setInv(data); setToken(''); localStorage.removeItem('nuvio-session'); void fetch('/api/nuvio/logout',{method:'POST'}); setEmail(''); setActive(0); setTab('overview'); setSelected(null); setDirty(false); setError(''); setNotice('Backup aberto somente para consulta. Ele não altera a conta.') } catch(e:any) { setError(e.message||'Backup inválido.') } finally { setBackupStatus('') }
   }
-  function openCompare() { const saved = readLocalSnapshots(localStorage); if (saved.length) { setCompare(normalizeInventory(saved[0].inventory)); setNotice(saved[0].partialSections?.length?`Este snapshot local é parcial; ainda não incluía ${saved[0].partialSections.length} conjunto(s) que não haviam sido carregados.`:'Snapshot completo carregado para comparação.'); setSnapshotOpen(true) } else setError('Ainda não há backups locais.') }
+  async function loadSnapshotHistory() {
+    let saved:any[]=[]
+    try { saved=await readIndexedSnapshots() } catch {}
+    if(!saved.length)saved=readLocalSnapshots(localStorage)
+    if(!saved.length){const legacy=localStorage.getItem(LEGACY_SNAPSHOT_STORAGE_KEY);if(legacy){setBackupStatus('Lendo snapshots anteriores em segundo plano…');try{saved=await parseLegacySnapshots(legacy)}catch(e:any){setError(e.message||'Não foi possível ler os snapshots anteriores.')}}}
+    return saved
+  }
+  async function openSnapshotHub() {
+    setSnapshotOpen(true);setCompare(null);setBackupStatus('Carregando snapshots…')
+    const saved=await loadSnapshotHistory()
+    setSnapshotCount(saved.length);setBackupStatus('')
+  }
+  async function openCompare() {
+    setSnapshotOpen(true);setCompare(null);setBackupStatus('Carregando pontos de comparação…')
+    const saved=await loadSnapshotHistory()
+    setBackupStatus('')
+    setSnapshotCount(saved.length)
+    if(saved.length){setCompare(saved[0].inventory as Inventory);setNotice(saved[0].partialSections?.length?`Este ponto local é parcial; não incluía ${saved[0].partialSections.length} conjunto(s) ainda não carregados.`:'Ponto local mais recente carregado para comparação.')}else{setCompare(null);setError('Ainda não há pontos de comparação locais.')}
+    setSnapshotOpen(true)
+  }
 
   function sanitizeTransferPart(kind: string, value: any) {
     if (kind === 'addons') return (Array.isArray(value) ? value : []).map((x:any,i:number)=>({ url: addonUrl(x?.url || ''), name: String(x?.name || x?.display_name || ''), enabled: x?.enabled !== false, sort_order: i })).filter((x:any)=>x.url)
     if (kind === 'plugins') return (Array.isArray(value) ? value : []).map((x:any,i:number)=>({ url: String(x?.url || x?.repository || ''), name: String(x?.name || x?.display_name || ''), enabled: x?.enabled !== false, sort_order: i })).filter((x:any)=>x.url)
-    return structuredClone(value ?? [])
+    return value ?? []
   }
-  function downloadTransferPackage(parts: Record<string,boolean>) {
+  async function downloadTransferPackage(parts: Record<string,boolean>) {
     if (!inv) return
-    const source = p
-    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.12.0', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
-    const b = new Blob([JSON.stringify(packageData,null,2)], {type:'application/json'}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`nuvio-transfer-${String(profileLabel).replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(u),500)
+    setBackupStatus('Montando pacote de transferência…')
+    try { const source=p;const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.12.0', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' };const b=await serializeJsonBlob(packageData,2);const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`nuvio-transfer-${String(profileLabel).replace(/[^a-z0-9_-]+/gi,'-')}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000) } catch(e:any) { setError(e.message||'Não foi possível montar o pacote.') } finally { setBackupStatus('') }
   }
-  function openTransferPackage(file: File) {
-    const reader = new FileReader(); reader.onload=()=>{ try { const raw=JSON.parse(String(reader.result)); if(raw?.kind!=='nuvio-transfer-package' || !raw?.parts) throw new Error('Este arquivo não é um pacote de transferência do Nuvio Control Center.'); setTransferPackage(raw); setTransferFileOpen(true) } catch(e:any){setError(e.message||'Pacote inválido.')} }; reader.readAsText(file)
+  async function openTransferPackage(file: File) {
+    setBackupStatus('Lendo pacote em segundo plano…')
+    try { const raw=await parseJsonFile(file); if(raw?.kind!=='nuvio-transfer-package' || !raw?.parts) throw new Error('Este arquivo não é um pacote de transferência do Nuvio Control Center.'); setTransferPackage(raw); setTransferFileOpen(true) } catch(e:any) { setError(e.message||'Pacote inválido.') } finally { setBackupStatus('') }
   }
   async function applyTransferPackage(pkg:any, selectedParts: Record<string,boolean>, mode:'merge'|'replace') {
     if (!token) { setError('Conecte uma conta Nuvio destino antes de importar.'); return }
-    setSaving(true); setError(''); let completed:string[]=[]
+    setSaving(true); setError(''); setBackupStatus('Preparando ponto de segurança…'); let completed:string[]=[]
     try {
-      const completeBackup=await completeInventoryForBackup(inv!)
-      persistSnapshot(completeBackup, 'backup antes da importação de pacote')
+      setBackupStatus('Salvando ponto de segurança…')
+      await persistSnapshot(inv, 'backup antes da importação de pacote')
+      setBackupStatus('Conferindo perfil de destino…')
       const latest=await fetchInventory(token), cloudProfile=findProfile(latest,profileId(p))
       if(!cloudProfile)throw new Error('O perfil destino não existe mais na conta.')
       const baselineProfile=findProfile(serverBaselineRef.current||{profiles:[]},profileId(p))
@@ -321,19 +364,19 @@ export default function Home() {
       if (selectedParts.addons && Array.isArray(part('addons'))) next.addons = mode==='replace' ? part('addons') : mergeByUrl(next.addons, part('addons'))
       if (selectedParts.plugins && Array.isArray(part('plugins'))) next.plugins = mode==='replace' ? part('plugins') : mergeByUrl(next.plugins, part('plugins'))
       if (selectedParts.collections && Array.isArray(part('collections'))) next.collections = mode==='replace' ? part('collections') : mergeCollections(next.collections, part('collections'))
-      if (selectedParts.library && Array.isArray(part('library'))) { next.library = await fetchAllProfileData('library',profileId(p)); next.library = mode==='replace' ? part('library') : mergeByIdentity(next.library, part('library')); next.libraryLoaded=true }
+      if (selectedParts.library && Array.isArray(part('library'))) { next.library = await fetchAllProfileData('library',profileId(p),setBackupStatus); next.library = mode==='replace' ? part('library') : mergeByIdentity(next.library, part('library')); next.libraryLoaded=true }
       if (selectedParts.progress && Array.isArray(part('watchProgress'))) next.watchProgress = mode==='replace' ? part('watchProgress') : mergeByIdentity(next.watchProgress, part('watchProgress'))
-      if (selectedParts.history && Array.isArray(part('watchedItems'))) { next.watchedItems = await fetchAllProfileData('history',profileId(p)); next.watchedItems = mode==='replace' ? part('watchedItems') : mergeByIdentity(next.watchedItems, part('watchedItems')); next.watchedItemsLoaded=true }
+      if (selectedParts.history && Array.isArray(part('watchedItems'))) { next.watchedItems = await fetchAllProfileData('history',profileId(p),setBackupStatus); next.watchedItems = mode==='replace' ? part('watchedItems') : mergeByIdentity(next.watchedItems, part('watchedItems')); next.watchedItemsLoaded=true }
       if (selectedParts.catalogs && part('catalogs')) next.catalogSettings = mergeCatalogSettings(next.catalogSettings, part('catalogs'), mode)
       const kinds: Array<[string,any]> = [['addons',next.addons],['plugins',next.plugins],['collections',next.collections],['catalog-settings',next.catalogSettings],['library',next.library],['watch-progress',next.watchProgress],['watched-items',next.watchedItems]]
-      for (const [kind,items] of kinds) { const key = kind==='catalog-settings'?'catalogs':kind==='watch-progress'?'progress':kind==='watched-items'?'history':kind; if (!selectedParts[key]) continue; const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileId(p),kind,items,settings:kind==='catalog-settings'?items:undefined})}); const d=await r.json(); if(!r.ok) throw new Error(d.error||`Falha ao importar ${key}`);completed.push(key) }
+      for (const [kind,items] of kinds) { const key = kind==='catalog-settings'?'catalogs':kind==='watch-progress'?'progress':kind==='watched-items'?'history':kind; if (!selectedParts[key]) continue;setBackupStatus(`Aplicando ${labelPart(key).toLowerCase()}…`);const r=await fetch('/api/nuvio/mutate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token,profileId:profileId(p),kind,items,settings:kind==='catalog-settings'?items:undefined})}); const d=await r.json(); if(!r.ok) throw new Error(d.error||`Falha ao importar ${key}`);completed.push(key) }
       const fresh=await fetchInventory(token),savedProfile=findProfile(fresh,profileId(p))
-      if(savedProfile&&selectedParts.library){savedProfile.library=await fetchAllProfileData('library',profileId(p));savedProfile.libraryLoaded=true}
-      if(savedProfile&&selectedParts.history){savedProfile.watchedItems=await fetchAllProfileData('history',profileId(p));savedProfile.watchedItemsLoaded=true}
+      if(savedProfile&&selectedParts.library){savedProfile.library=await fetchAllProfileData('library',profileId(p),setBackupStatus);savedProfile.libraryLoaded=true}
+      if(savedProfile&&selectedParts.history){savedProfile.watchedItems=await fetchAllProfileData('history',profileId(p),setBackupStatus);savedProfile.watchedItemsLoaded=true}
       const differences=verifySavedSections(next,savedProfile,selectedSections)
       if(differences.length)throw new Error(`A nuvem foi relida, mas não confirmou: ${describeSections(differences)}.`)
       installServerInventory(fresh); setDirty(false); setTransferFileOpen(false); setTransferPackage(null); setNotice('Pacote importado, salvo e verificado na conta atual.')
-    } catch(e:any){if(completed.length){try{const fresh=await fetchInventory(token);installServerInventory(fresh)}catch{};setError(`${e.message||'Falha na importação'} Partes enviadas: ${completed.join(', ')}. A conta foi relida; confira as partes restantes antes de tentar novamente.`)}else setError(e.message||'Falha na importação')} finally {setSaving(false)}
+    } catch(e:any){if(completed.length){try{const fresh=await fetchInventory(token);installServerInventory(fresh)}catch{};setError(`${e.message||'Falha na importação'} Partes enviadas: ${completed.join(', ')}. A conta foi relida; confira as partes restantes antes de tentar novamente.`)}else setError(e.message||'Falha na importação')} finally {setSaving(false);setBackupStatus('')}
   }
 
   async function diagnose(rows: Addon[], onlyMissing = false) {
@@ -426,7 +469,7 @@ export default function Home() {
     if (!token) { setError('Snapshot é somente leitura.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
-      persistSnapshot(inv, `antes de salvar ${kind}`)
+      await persistSnapshot(inv, `antes de salvar ${kind}`)
       const items = itemsOverride || (kind === 'addons' ? p.addons : kind === 'plugins' ? p.plugins : p.collections)
       const r = await fetch('/api/nuvio/mutate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, profileId: profileId(p), kind, items }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha ao salvar')
       const fresh = await fetchInventory(token); installServerInventory(fresh); setDirty(false); setNotice(`${kind === 'addons' ? 'Addons' : kind === 'plugins' ? 'Plugins' : 'Collections'} salvos e relidos da conta.`)
@@ -436,7 +479,7 @@ export default function Home() {
     if (!token) { setError('Snapshot é somente leitura.'); return }
     setSaving(true); setError(''); setNotice('')
     try {
-      persistSnapshot(inv, 'antes de salvar catálogos')
+      await persistSnapshot(inv, 'antes de salvar catálogos')
       const baseline = serverBaselineRef.current
       const latest = await fetchInventory(token)
       const baselineProfile = findProfile(baseline || { profiles: [] }, profileId(p))
@@ -455,7 +498,7 @@ export default function Home() {
     setSaving(true); setError(''); setNotice('')
     let completed: string[] = []
     try {
-      persistSnapshot(inv, 'backup antes de salvar todas as alterações')
+      await persistSnapshot(inv, 'backup antes de salvar todas as alterações')
       const settings = buildCatalogSettings(p,diag)
       const candidate = { ...p, catalogSettings: settings }
       const sections: WritableSection[] = ['addons','plugins','collections','catalogSettings']
@@ -505,7 +548,7 @@ export default function Home() {
     let completedProfiles = 0
     let completedWrites:string[]=[]
     try {
-      persistSnapshot(inv, 'antes de copiar addon entre perfis')
+      await persistSnapshot(inv, 'antes de copiar addon entre perfis')
       const latest = await fetchInventory(token)
       const baseline = serverBaselineRef.current
       const writeSections: WritableSection[] = includeCatalogSettings ? ['addons','catalogSettings'] : ['addons']
@@ -620,7 +663,7 @@ export default function Home() {
     if (dirty) { setError('Salve ou descarte as alterações pendentes antes de excluir um perfil.'); return }
     const name = String(target.profile?.name || `Perfil ${profileIndex}`)
     if (!window.confirm(`Excluir o perfil “${name}” da conta Nuvio? Os dados associados a esse perfil poderão ser removidos permanentemente.`)) return
-    persistSnapshot(inv, `antes de excluir ${name}`)
+    await persistSnapshot(inv, `antes de excluir ${name}`)
     setSaving(true); setError(''); setNotice('')
     try {
       const latest = await fetchInventory(token)
@@ -651,7 +694,7 @@ export default function Home() {
   function logout() { diagnosticSessionRef.current++; diagnosticRunsRef.current.clear(); localStorage.removeItem('nuvio-session'); void fetch('/api/nuvio/logout',{method:'POST'}); setInv(null); setToken(''); setDiagnosticsByProfile({}); setDiagnosticLoadingByProfile({}); setDiagnosticProgressByProfile({}); setSelected(null); setCompare(null); setDirty(false); setNotice('') }
 
   if (booting) return <div className="login-wrap"><div className="login-card"><div className="brand large"><Brand /></div><div className="login-copy"><h1>Restaurando sessão…</h1><p>Verificando a sessão salva sem pedir sua senha novamente.</p></div></div></div>
-  if (!inv) return <Login email={email} setEmail={setEmail} password={password} setPassword={setPassword} loading={loading} error={error} remember={remember} setRemember={setRemember} onSubmit={login} onImport={() => fileRef.current?.click()} fileRef={fileRef} importSnapshot={importSnapshot} />
+  if (!inv) return <Login email={email} setEmail={setEmail} password={password} setPassword={setPassword} loading={loading} error={error} backupStatus={backupStatus} remember={remember} setRemember={setRemember} onSubmit={login} onImport={() => fileRef.current?.click()} fileRef={fileRef} importSnapshot={importSnapshot} />
 
   const profileLabel = p.profile?.name || `Perfil ${active + 1}`
   return <div className={`app-shell${sidebarCollapsed?' sidebar-collapsed':''}${mobileNavOpen?' mobile-nav-open':''}`}>
@@ -659,7 +702,7 @@ export default function Home() {
       <div className="brand"><Brand className="brand-wordmark" /><Brand variant="mark" className="brand-mark" /><button type="button" className="sidebar-collapse" aria-label={mobileNavOpen?'Fechar menu':sidebarCollapsed?'Expandir menu':'Recolher menu'} title={mobileNavOpen?'Fechar menu':sidebarCollapsed?'Expandir menu':'Recolher menu'} onClick={()=>{if(window.matchMedia('(max-width: 820px)').matches)setMobileNavOpen(false);else setSidebarCollapsed(v=>!v)}}><Icon name={mobileNavOpen?'close':sidebarCollapsed?'chevron-right':'chevron-left'} size={19}/></button></div>
       <div className="account-card"><div className="eyebrow">CONTA</div><div className="account-email">{email || 'Snapshot importado'}</div><small>{token ? 'Sessão ativa' : 'Somente leitura'}</small></div>
       <nav className="nav" aria-label="Navegação principal"><div className="nav-label">PAINEL</div>{NAV.map(([id,label]) => <button key={id} type="button" title={sidebarCollapsed?label:undefined} aria-current={tab===id?'page':undefined} className={tab===id?'active':''} onClick={() => navigate(id)}><span className="nav-mark"><Icon name={NAV_ICONS[id]} size={19}/></span><span className="nav-text">{label}</span><em>{id==='addons'?counts.addons:id==='catalogs'?catalogCount(p,diag):id==='plugins'?counts.plugins:id==='collections'?counts.collections:id==='watch'?counts.progress:id==='library'?counts.library:''}</em></button>)}</nav>
-      <div className={`sidebar-utilities${utilitiesOpen?' open':''}`}><div className="nav-label utility-section-title">CONTA E FERRAMENTAS</div><button type="button" className="utilities-toggle" aria-expanded={utilitiesOpen} onClick={()=>setUtilitiesOpen(v=>!v)}><span>Conta e ferramentas</span><Icon name={utilitiesOpen?'chevron-down':'chevron-right'} size={17}/></button><div className="sidebar-tools"><button type="button" title="Transferência por arquivo" aria-label="Transferência por arquivo" onClick={() => setTransferOpen(true)}><span className="utility-mark"><Icon name="transfer" size={17}/></span><span>Transferência por arquivo</span></button><button type="button" title="Backup e snapshots" aria-label="Backup e snapshots" onClick={saveSnapshotLocal}><span className="utility-mark"><Icon name="backup" size={17}/></span><span>Backup e snapshots</span></button><button type="button" title="Comparar backup" aria-label="Comparar backup" onClick={openCompare}><span className="utility-mark"><Icon name="grid" size={17}/></span><span>Comparar backup</span></button></div><div className="sidebar-bottom"><button type="button" title="Exportar backup" aria-label="Exportar backup" onClick={() => downloadSnapshot()}><span className="utility-mark"><Icon name="external" size={17}/></span><span>Exportar backup</span></button><button type="button" title={token ? 'Sair da conta' : 'Fechar snapshot'} aria-label={token ? 'Sair da conta' : 'Fechar snapshot'} onClick={logout}><span className="utility-mark"><Icon name="user" size={17}/></span><span>{token ? 'Sair da conta' : 'Fechar snapshot'}</span></button></div></div><div className="creator-credit">por <b>ReiThomato</b></div>
+      <div className={`sidebar-utilities${utilitiesOpen?' open':''}`}><div className="nav-label utility-section-title">CONTA E FERRAMENTAS</div><button type="button" className="utilities-toggle" aria-expanded={utilitiesOpen} onClick={()=>setUtilitiesOpen(v=>!v)}><span>Conta e ferramentas</span><Icon name={utilitiesOpen?'chevron-down':'chevron-right'} size={17}/></button><div className="sidebar-tools"><button type="button" title="Transferência por arquivo" aria-label="Transferência por arquivo" onClick={() => setTransferOpen(true)}><span className="utility-mark"><Icon name="transfer" size={17}/></span><span>Transferência por arquivo</span></button><button type="button" title="Backup e snapshots" aria-label="Backup e snapshots" onClick={()=>void openSnapshotHub()}><span className="utility-mark"><Icon name="backup" size={17}/></span><span>Backup e snapshots</span></button><button type="button" title="Comparar backup" aria-label="Comparar backup" onClick={()=>void openCompare()}><span className="utility-mark"><Icon name="grid" size={17}/></span><span>Comparar backup</span></button></div><div className="sidebar-bottom"><button type="button" title="Exportar backup" aria-label="Exportar backup" onClick={() => downloadSnapshot()}><span className="utility-mark"><Icon name="external" size={17}/></span><span>Exportar backup</span></button><button type="button" title={token ? 'Sair da conta' : 'Fechar snapshot'} aria-label={token ? 'Sair da conta' : 'Fechar snapshot'} onClick={logout}><span className="utility-mark"><Icon name="user" size={17}/></span><span>{token ? 'Sair da conta' : 'Fechar snapshot'}</span></button></div></div><div className="creator-credit">por <b>ReiThomato</b></div>
     </aside>
     {mobileNavOpen&&<button className="mobile-nav-backdrop" aria-label="Fechar menu" onClick={()=>setMobileNavOpen(false)} />}
     <main className="content">
@@ -676,16 +719,16 @@ export default function Home() {
       {tab === 'watch' && <WatchPage rows={p.watchProgress} history={p.watchedItems} addons={p.addons} loading={profileDataLoading==='history'} error={profileDataError} hasMore={p.watchedItemsHasMore} onLoadMore={()=>void loadProfileData('history')} />}
       {tab === 'library' && <LibraryPage rows={p.library} token={token} profile={p} onUpdate={(items:any[]) => updateProfile(x => ({ ...x, library: items }))} loading={profileDataLoading==='library'} error={profileDataError} hasMore={p.libraryHasMore} onLoadMore={()=>void loadProfileData('library')} />}
     </main>
-    {snapshotOpen && <SnapshotModal compare={compare} current={inv} close={() => { setSnapshotOpen(false); setCompare(null) }} onExport={()=>downloadSnapshot()} onImport={()=>fileRef.current?.click()} />}
-    {importOpen && <ImportModal close={() => setImportOpen(false)} fileRef={fileRef} importSnapshot={importSnapshot} />}
+    {snapshotOpen && <SnapshotModal compare={compare} current={inv} savedCount={snapshotCount} backupStatus={backupStatus} close={() => { setSnapshotOpen(false); setCompare(null) }} onSave={saveSnapshotLocal} onExport={()=>downloadSnapshot()} onImport={()=>fileRef.current?.click()} onCompare={()=>void openCompare()} />}
     {profileModal && <SimpleModal title="Renomear perfil" close={() => setProfileModal(false)}><label className="form-label">Nome do perfil<input value={profileName} onChange={e=>setProfileName(e.target.value)} /></label><div className="modal-actions"><button className="ghost" onClick={()=>setProfileModal(false)}>Cancelar</button><button className="primary" disabled={saving||!profileName.trim()} onClick={saveProfileName}>{saving?'Salvando…':'Salvar'}</button></div></SimpleModal>}
     {profileManagerOpen&&<ProfileManagerModal profiles={inv.profiles} avatarCatalog={inv.avatarCatalog||[]} saving={saving} draft={profileDraft} setDraft={setProfileDraft} editIndex={profileEditIndex} formOpen={profileFormOpen} openEditor={openProfileEditor} back={()=>setProfileFormOpen(false)} saveProfile={saveManagedProfile} clearPin={clearManagedProfilePin} deleteProfile={deleteManagedProfile} close={()=>{setProfileManagerOpen(false);setProfileFormOpen(false);setProfileEditIndex(null)}} />}
     {addonTransfer && <AddonProfileTransferModal item={addonTransfer.item} sourceIndex={addonTransfer.sourceIndex} profiles={inv.profiles} catalogPreferenceCount={(inv.profiles[addonTransfer.sourceIndex]?.catalogSettings?.items||[]).filter((s:any)=>{const ids=[String(diag[addonTransfer.item.url||'']?.manifest?.id||''),String(addonTransfer.item.id||''),String(addonTransfer.item.url||''),addonKey(addonTransfer.item.url||'')].map(x=>x.toLowerCase());const saved=String(s.addon_id||s.addonId||'').toLowerCase();return ids.includes(saved)||ids.includes(addonKey(saved))}).length} saving={saving} dirty={dirty} close={()=>setAddonTransfer(null)} onCopy={copyAddonToProfiles} />}
   {addonModal && <AddonEditor modal={addonModal} existing={p.addons} close={()=>setAddonModal(null)} save={(value:any)=>{ const existing=p.addons; if(addonModal.mode==='edit'){updateProfile(x=>({...x,addons:existing.map(a=>sameAddon(a,addonModal.item)?{...a,...value}:a)}))}else{const incoming=value.items.map((entry:any,i:number)=>({...entry.addon,sort_order:existing.length+i}));const previewCatalogs=value.items.flatMap((entry:any)=>flattenManifestCatalogs(entry.addon,entry.manifest));let catalogSettings=p.catalogSettings;if(previewCatalogs.length){catalogSettings=catalogSettingsForManifests(p.catalogSettings,[...allCatalogs(diag,existing),...previewCatalogs]);const chosen=new Set(value.items.flatMap((entry:any)=>entry.activeCatalogKeys||[]));catalogSettings={...catalogSettings,items:catalogSettings.items.map((item:any)=>chosen.has(catalogCloudKey(item.addon_id,item.type,item.catalog_id))?{...item,enabled:true}:item)}}updateProfile(x=>({...x,addons:[...existing,...incoming],catalogSettings}))}setTab('catalogs');setAddonModal(null) }} />}
     {collectionModal && <CollectionEditor value={collectionModal} close={()=>setCollectionModal(null)} catalogs={allCatalogs(diag,p.addons)} save={(x:any)=>{ const old=p.collections; const exists=old.some(v=>String(v.id)===String(x.id)); const next=exists?old.map(v=>String(v.id)===String(x.id)?x:v):[...old,x]; updateProfile(v=>({...v,collections:next})); setCollectionModal(null) }} />}
     {collectionImportOpen && <CollectionUrlModal close={()=>setCollectionImportOpen(false)} onImport={(data:any)=>{ const incoming=normalizeCollections(data); if(incoming.length){ updateProfile(v=>({...v,collections:[...v.collections,...incoming]})); setNotice(`${incoming.length} coleção(ões) importada(s) localmente.`); setCollectionImportOpen(false) } else setError('O JSON não contém coleções reconhecíveis.') }} />}
-    {transferOpen && <TransferModal source={p} sourceLabel={profileLabel} close={()=>setTransferOpen(false)} exportPackage={downloadTransferPackage} onImportFile={()=>transferFileRef.current?.click()} />}{transferFileOpen && transferPackage && <TransferImportModal pkg={transferPackage} close={()=>{setTransferFileOpen(false);setTransferPackage(null)}} onApply={applyTransferPackage} saving={saving} />}
-    <input ref={transferFileRef} type="file" accept=".json,application/json" hidden onChange={e=>{const f=e.target.files?.[0];if(f)openTransferPackage(f);e.currentTarget.value=''}} />
+    {transferOpen && <TransferModal source={p} sourceLabel={profileLabel} close={()=>setTransferOpen(false)} exportPackage={downloadTransferPackage} onImportFile={()=>transferFileRef.current?.click()} backupStatus={backupStatus} />}{transferFileOpen && transferPackage && <TransferImportModal pkg={transferPackage} close={()=>{setTransferFileOpen(false);setTransferPackage(null)}} onApply={applyTransferPackage} saving={saving} backupStatus={backupStatus} />}
+    <input ref={transferFileRef} type="file" accept=".json,application/json" hidden onChange={async e=>{const input=e.currentTarget;const f=input.files?.[0];if(f)await openTransferPackage(f);input.value=''}} />
+    {backupStatus&&!snapshotOpen&&!transferOpen&&!transferFileOpen&&<div className="backup-toast" role="status"><span className="progress-spinner"/><span>{backupStatus}</span></div>}
     <input ref={collectionFileRef} type="file" accept=".json,application/json" hidden onChange={e=>{ const f=e.target.files?.[0]; if(!f)return; const rd=new FileReader(); rd.onload=()=>{try{const data=normalizeCollections(JSON.parse(String(rd.result))); if(data.length){updateProfile(v=>({...v,collections:[...v.collections,...data]}));setNotice(`${data.length} coleção(ões) importada(s).`)}else setError('JSON sem coleções reconhecíveis.')}catch{setError('Arquivo JSON inválido.')}};rd.readAsText(f);e.currentTarget.value='' }} />
   </div>
 }
@@ -723,14 +766,14 @@ function sameAddon(a:Addon,b?:Addon){return addonKey(a.url||'')===addonKey(b?.ur
 function newCollection(){return{id:`collection-${crypto.randomUUID()}`,title:'Nova coleção',viewMode:'GRID',showAllTab:true,pinToTop:false,focusGlowEnabled:false,backdropImageUrl:'',folders:[]}}
 function downloadCollection(x:any){const b=new Blob([JSON.stringify(x,null,2)],{type:'application/json'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`collection-${String(x.title||x.id||'nuvio').replace(/[^a-z0-9_-]+/gi,'-')}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(u),500)}
 
-function Login({email,setEmail,password,setPassword,loading,error,onSubmit,onImport,fileRef,importSnapshot,remember,setRemember}:any){return <div className="login-wrap"><div className="login-card"><div className="brand large"><Brand /></div><div className="login-copy"><h1>Seu centro de operações</h1><p>Gerencie e audite sua configuração Nuvio em um único painel.</p></div><form onSubmit={onSubmit}><label>E-mail Nuvio<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required /></label><label>Senha<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required /></label><label className="check-line"><input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)} /> Manter sessão neste navegador</label><button className="primary full" disabled={loading}>{loading?'Conectando…':'Conectar ao Nuvio'}</button></form>{error&&<div className="alert">{error}</div>}<div className="login-divider"><span>ou</span></div><button className="ghost full" onClick={onImport}>Abrir snapshot</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={e=>e.target.files?.[0]&&importSnapshot(e.target.files[0])}/><p className="security-note">A opção de sessão salva mantém sua conta conectada usando um cookie protegido; sua senha não é salva.</p></div></div>}
+function Login({email,setEmail,password,setPassword,loading,error,backupStatus,onSubmit,onImport,fileRef,importSnapshot,remember,setRemember}:any){return <div className="login-wrap"><div className="login-card"><div className="brand large"><Brand /></div><div className="login-copy"><h1>Seu centro de operações</h1><p>Gerencie e audite sua configuração Nuvio em um único painel.</p></div><form onSubmit={onSubmit}><label>E-mail Nuvio<input type="email" value={email} onChange={e=>setEmail(e.target.value)} required /></label><label>Senha<input type="password" value={password} onChange={e=>setPassword(e.target.value)} required /></label><label className="check-line"><input type="checkbox" checked={remember} onChange={e=>setRemember(e.target.checked)} /> Manter sessão neste navegador</label><button className="primary full" disabled={loading}>{loading?'Conectando…':'Conectar ao Nuvio'}</button></form>{error&&<div className="alert">{error}</div>}<div className="login-divider"><span>ou</span></div><button className="ghost full" onClick={onImport} disabled={!!backupStatus}>{backupStatus||'Abrir snapshot'}</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={async e=>{const input=e.currentTarget;const file=input.files?.[0];if(file)await importSnapshot(file);input.value=''}}/>{backupStatus&&<div className="backup-progress" role="status"><span className="progress-spinner"/><span>{backupStatus}</span></div>}<p className="security-note">A opção de sessão salva mantém sua conta conectada usando um cookie protegido; sua senha não é salva.</p></div></div>}
 
 function ProfileManagerModal({profiles,avatarCatalog,saving,draft,setDraft,editIndex,formOpen,openEditor,back,saveProfile,clearPin,deleteProfile,close}:any){
   const current=editIndex===null?null:profiles[editIndex]
   const avatarSrc=(item:any)=>item.imageUrl||item.image_url||item.url||(item.storagePath||item.storage_path?`https://api.nuvio.tv/storage/v1/object/public/avatars/${String(item.storagePath||item.storage_path).replace(/^\//,'')}`:'')
   const avatarId=(item:any)=>String(item.id||item.avatar_id||'')
-  return <div className="modal-backdrop"><div className="modal profile-manager-modal" role="dialog" aria-modal="true" aria-labelledby="profile-manager-title"><div className="modal-head"><div><div className="eyebrow">CONTA NUVIO</div><h2 id="profile-manager-title">{formOpen?(editIndex===null?'Adicionar perfil':'Editar perfil'):'Gerenciar perfis'}</h2></div><button className="icon-btn" aria-label={formOpen?'Voltar para perfis':'Fechar gerenciamento de perfis'} onClick={formOpen?back:close}>×</button></div>
-    {!formOpen?<><p className="muted">Perfis, avatares e PIN sincronizados com os aplicativos Nuvio conectados à conta.</p><div className="managed-profile-list">{profiles.map((entry:any,i:number)=>{const x=entry.profile||{};const id=Number(x.profile_index||x.id||i+1);const image=x.avatar_url||x.avatarUrl||avatarSrc(avatarCatalog.find((a:any)=>avatarId(a)===String(x.avatar_id||x.avatarId||'')));return <div className="managed-profile-row" key={id}><div className="managed-avatar">{image?<img src={image} alt=""/>:<span>{String(x.name||`Perfil ${i+1}`).slice(0,1).toUpperCase()}</span>}</div><div className="managed-profile-info"><b>{x.name||`Perfil ${i+1}`}</b><small>{x.pin_enabled?'PIN ativado':'Sem PIN'} · Perfil {id}</small></div><button className="ghost" disabled={saving} onClick={()=>openEditor(i)}>Editar</button>{x.pin_enabled&&<button className="ghost" disabled={saving} onClick={()=>clearPin(id)}>Remover PIN</button>}{id!==1&&<button className="ghost danger-btn" disabled={saving||profiles.length<=1} onClick={()=>deleteProfile(id)}>Excluir perfil</button>}</div>})}</div><div className="modal-actions"><button className="ghost" disabled={saving} onClick={close}>Fechar</button><button className="primary" disabled={saving||profiles.length>=6} onClick={()=>openEditor(null)}>Adicionar perfil</button></div>{profiles.length>=6&&<p className="security-note">Limite de 6 perfis da API Nuvio atingido.</p>}<p className="security-note">O perfil principal não pode ser excluído. A exclusão de outro perfil pode remover seus dados associados da conta.</p></>:<><label className="form-label">Nome do perfil<input autoFocus maxLength={40} value={draft.name} onChange={e=>setDraft((x:any)=>({...x,name:e.target.value}))} placeholder="Ex.: Sala, Crianças…"/></label><div className="avatar-picker"><div className="avatar-picker-head"><b>Avatar</b><span className="muted small">Escolha um avatar do Nuvio ou use uma imagem pública.</span></div><div className="avatar-options">{avatarCatalog.map((a:any)=>{const image=avatarSrc(a);const id=avatarId(a);return <button type="button" key={id||image} className={draft.avatarId===id?'selected':''} aria-pressed={draft.avatarId===id} title={a.displayName||a.display_name||id} onClick={()=>setDraft((x:any)=>({...x,avatarId:id,avatarUrl:''}))}>{image?<img src={image} alt=""/>:<span>{(a.displayName||a.display_name||'?').slice(0,1)}</span>}</button>})}</div><label className="form-label">URL da foto<input type="url" value={draft.avatarUrl} onChange={e=>setDraft((x:any)=>({...x,avatarUrl:e.target.value,avatarId:''}))} placeholder="https://…"/></label><label className="form-label">Cor de destaque<input type="color" value={draft.avatarColorHex} onChange={e=>setDraft((x:any)=>({...x,avatarColorHex:e.target.value}))}/></label></div><div className="profile-pin-fields"><label className="form-label">{current?.profile?.pin_enabled?'Novo PIN (deixe vazio para manter)':'PIN opcional'}<input inputMode="numeric" autoComplete="new-password" type="password" maxLength={8} value={draft.pin} onChange={e=>setDraft((x:any)=>({...x,pin:e.target.value.replace(/\D/g,'')}))} placeholder="4 a 8 dígitos"/></label>{current?.profile?.pin_enabled&&draft.pin&&<label className="form-label">PIN atual<input inputMode="numeric" type="password" maxLength={8} value={draft.currentPin} onChange={e=>setDraft((x:any)=>({...x,currentPin:e.target.value.replace(/\D/g,'')}))}/></label>}</div><p className="security-note">O PIN é validado e armazenado pelo Nuvio. O painel não salva o PIN localmente.</p><div className="modal-actions"><button className="ghost" onClick={back}>Voltar</button><button className="primary" disabled={saving||!draft.name.trim()||Boolean(draft.pin&&draft.pin.length<4)||Boolean(current?.profile?.pin_enabled&&draft.pin&&!draft.currentPin)} onClick={saveProfile}>{saving?'Salvando…':'Salvar e sincronizar'}</button></div></>}
+  return <div className="modal-backdrop profile-manager-backdrop"><div className="modal profile-manager-modal" role="dialog" aria-modal="true" aria-labelledby="profile-manager-title"><div className="modal-head"><div><div className="eyebrow">CONTA NUVIO</div><h2 id="profile-manager-title">{formOpen?(editIndex===null?'Adicionar perfil':'Editar perfil'):'Gerenciar perfis'}</h2></div><button className="icon-btn" aria-label={formOpen?'Voltar para perfis':'Fechar gerenciamento de perfis'} onClick={formOpen?back:close}>×</button></div>
+    {!formOpen?<><p className="muted">Perfis, avatares e PIN sincronizados com os aplicativos Nuvio conectados à conta.</p><div className="managed-profile-list">{profiles.map((entry:any,i:number)=>{const x=entry.profile||{};const id=Number(x.profile_index||x.id||i+1);const image=x.avatar_url||x.avatarUrl||avatarSrc(avatarCatalog.find((a:any)=>avatarId(a)===String(x.avatar_id||x.avatarId||'')));return <div className="managed-profile-row" key={id}><div className="managed-avatar">{image?<img src={image} alt="" loading="lazy" decoding="async"/>:<span>{String(x.name||`Perfil ${i+1}`).slice(0,1).toUpperCase()}</span>}</div><div className="managed-profile-info"><b>{x.name||`Perfil ${i+1}`}</b><small>{x.pin_enabled?'PIN ativado':'Sem PIN'} · Perfil {id}</small></div><div className="managed-profile-actions"><button className="ghost" disabled={saving} onClick={()=>openEditor(i)}>Editar</button>{x.pin_enabled&&<button className="ghost" disabled={saving} onClick={()=>clearPin(id)}>Remover PIN</button>}{id!==1&&<button className="ghost danger-btn" disabled={saving||profiles.length<=1} onClick={()=>deleteProfile(id)}>Excluir perfil</button>}</div></div>})}</div><div className="modal-actions"><button className="ghost" disabled={saving} onClick={close}>Fechar</button><button className="primary" disabled={saving||profiles.length>=6} onClick={()=>openEditor(null)}>Adicionar perfil</button></div>{profiles.length>=6&&<p className="security-note">Limite de 6 perfis da API Nuvio atingido.</p>}<p className="security-note">O perfil principal não pode ser excluído. A exclusão de outro perfil pode remover seus dados associados da conta.</p></>:<><label className="form-label">Nome do perfil<input autoFocus maxLength={40} value={draft.name} onChange={e=>setDraft((x:any)=>({...x,name:e.target.value}))} placeholder="Ex.: Sala, Crianças…"/></label><div className="avatar-picker"><div className="avatar-picker-head"><b>Avatar</b><span className="muted small">Escolha um avatar do Nuvio ou use uma imagem pública.</span></div><div className="avatar-options">{avatarCatalog.map((a:any)=>{const image=avatarSrc(a);const id=avatarId(a);return <button type="button" key={id||image} className={draft.avatarId===id?'selected':''} aria-pressed={draft.avatarId===id} title={a.displayName||a.display_name||id} onClick={()=>setDraft((x:any)=>({...x,avatarId:id,avatarUrl:''}))}>{image?<img src={image} alt=""/>:<span>{(a.displayName||a.display_name||'?').slice(0,1)}</span>}</button>})}</div><label className="form-label">URL da foto<input type="url" value={draft.avatarUrl} onChange={e=>setDraft((x:any)=>({...x,avatarUrl:e.target.value,avatarId:''}))} placeholder="https://…"/></label><label className="form-label">Cor de destaque<input type="color" value={draft.avatarColorHex} onChange={e=>setDraft((x:any)=>({...x,avatarColorHex:e.target.value}))}/></label></div><div className="profile-pin-fields"><label className="form-label">{current?.profile?.pin_enabled?'Novo PIN (deixe vazio para manter)':'PIN opcional'}<input inputMode="numeric" autoComplete="new-password" type="password" maxLength={8} value={draft.pin} onChange={e=>setDraft((x:any)=>({...x,pin:e.target.value.replace(/\D/g,'')}))} placeholder="4 a 8 dígitos"/></label>{current?.profile?.pin_enabled&&draft.pin&&<label className="form-label">PIN atual<input inputMode="numeric" type="password" maxLength={8} value={draft.currentPin} onChange={e=>setDraft((x:any)=>({...x,currentPin:e.target.value.replace(/\D/g,'')}))}/></label>}</div><p className="security-note">O PIN é validado e armazenado pelo Nuvio. O painel não salva o PIN localmente.</p><div className="modal-actions"><button className="ghost" onClick={back}>Voltar</button><button className="primary" disabled={saving||!draft.name.trim()||Boolean(draft.pin&&draft.pin.length<4)||Boolean(current?.profile?.pin_enabled&&draft.pin&&!draft.currentPin)} onClick={saveProfile}>{saving?'Salvando…':'Salvar e sincronizar'}</button></div></>}
   </div></div>
 }
 
@@ -882,33 +925,50 @@ function AddonEditor({modal,existing=[],close,save}:any){
   return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal addon-editor-modal"><div className="modal-head"><div><div className="eyebrow">EXTENSÕES</div><h2>{modal.mode==='add'?'Adicionar addons':'Editar addon'}</h2></div><button className="icon-btn" onClick={close}>×</button></div>{modal.mode==='edit'?<form onSubmit={submit} className="form-grid"><label className="form-label">URL do manifesto<input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://…" required/></label><label className="form-label">Nome personalizado<input value={name} onChange={e=>setName(e.target.value)} placeholder="Opcional"/></label><label className="check-line"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/> Ativo</label><div className="modal-actions"><button type="button" className="ghost" onClick={close}>Cancelar</button><button className="primary">Salvar</button></div></form>:<form onSubmit={submit} className="form-grid"><div className="addon-mode-tabs"><button type="button" className={mode==='single'?'active':''} onClick={()=>{setMode('single');setResults([])}}>Um addon</button><button type="button" className={mode==='batch'?'active':''} onClick={()=>{setMode('batch');setResults([])}}>Lista de addons</button></div>{mode==='single'?<label className="form-label">URL do manifesto<input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://…" required/></label>:<label className="form-label">Cole os links, um por linha<textarea rows={4} value={list} onChange={e=>setList(e.target.value)} placeholder="https://addon-um/manifest.json&#10;https://addon-dois/manifest.json" required/></label>}{!results.length&&<><label className="check-line"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/> Adicionar addon(s) ativo(s)</label><div className="modal-actions"><button type="button" className="ghost" onClick={close}>Cancelar</button><button className="primary" disabled={busy}>{busy?'Consultando…':'Consultar manifestos'}</button></div></>}{results.length>0&&<><div className="batch-catalog-controls"><b>Prévia · {results.filter(x=>x.ok).length} de {results.length} manifestos disponíveis</b><div><button type="button" className="ghost" onClick={()=>setAllCatalogs(true)}>Ativar todos os catálogos</button><button type="button" className="ghost" onClick={()=>setAllCatalogs(false)}>Desativar todos</button></div></div><label className="check-line"><input type="checkbox" checked={results.every(x=>x.enabled!==false)} onChange={e=>setResults(prev=>prev.map(x=>({...x,enabled:e.target.checked})))}/> Adicionar addons ativos</label><div className="batch-preview-list">{results.map((entry:any)=>{const home=catalogs(entry);return <section className="batch-preview-item" key={entry.url}><header><div><b>{entry.manifest?.name||entry.url}</b><small>{entry.manifest?`${entry.manifest.version||'Versão não informada'} · ${home.length} catálogos · ${entry.latencyMs} ms`:entry.error||'Consultando manifesto…'}</small></div><label className="check-line"><input type="checkbox" checked={entry.enabled!==false} disabled={!entry.ok} onChange={e=>setResults(prev=>prev.map(x=>x.url===entry.url?{...x,enabled:e.target.checked}:x))}/> Ativo</label></header>{entry.manifest?.description&&<p>{entry.manifest.description}</p>}{home.length>0&&<div className="batch-catalog-list">{home.map((c:any,i:number)=>{const key=catalogCloudKey(String(entry.manifest.id||entry.url),String(c.type||c.apiType||''),String(c.id||''));return <label key={`${key}-${i}`}><input type="checkbox" checked={entry.activeCatalogKeys.includes(key)} onChange={e=>toggleCatalog(entry,c,e.target.checked)}/><span>{c.name||c.id}</span><small>{c.type||c.apiType} · {c.id}</small></label>})}</div>}</section>})}</div><div className="modal-actions"><button type="button" className="ghost" onClick={()=>setResults([])}>Voltar</button><button type="button" className="ghost" onClick={close}>Cancelar</button><button className="primary" disabled={busy||!results.some(x=>x.ok)}>{busy?'Aguardando manifestos…':`Adicionar ${results.filter(x=>x.ok).length} addon(s)`}</button></div></>}</form>}</div></div>
 }
 
-function TransferModal({source,sourceLabel,close,exportPackage,onImportFile}:any){
+function TransferModal({source,sourceLabel,close,exportPackage,onImportFile,backupStatus}:any){
   const [parts,setParts]=useState({addons:true,plugins:true,collections:true,catalogs:true,library:false,watchProgress:false,watchedItems:false})
   const toggle=(k:string)=>setParts((p:any)=>({...p,[k]:!p[k]}))
-  return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal transfer-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-modal-title">
-    <div className="modal-head"><div><div className="eyebrow">TRANSFERÊNCIA</div><h2 id="transfer-modal-title">Pacotes de configuração</h2></div><button className="icon-btn" aria-label="Fechar janela" onClick={close}>×</button></div>
-    <p className="muted">Agora você não precisa conectar a conta de origem. Exporte um pacote, leve o arquivo para outro dispositivo/conta e importe somente o que quiser.</p>
-    <div className="transfer-section"><h3>1. Criar pacote deste perfil</h3><div className="transfer-checks">{Object.entries(parts).map(([k,v])=><label key={k} className="check-line"><input type="checkbox" checked={v} onChange={()=>toggle(k)}/>{labelPart(k)}</label>)}</div><div className="security-note">O pacote remove senha e tokens. Addons são exportados apenas com URL, nome, estado e ordem, evitando levar APIs salvas em campos extras.</div><button className="primary full" onClick={()=>exportPackage(parts)}>Exportar pacote selecionado</button></div>
-    <div className="transfer-divider"><span>ou</span></div>
-    <div className="transfer-section"><h3>2. Importar pacote em uma conta conectada</h3><p className="muted">A conta atual será o destino. Depois você escolhe perfil, partes e se deseja mesclar ou substituir cada seção.</p><button className="ghost full" onClick={onImportFile}>Selecionar pacote JSON</button></div>
+  return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal transfer-modal transfer-hub" role="dialog" aria-modal="true" aria-labelledby="transfer-modal-title">
+    <div className="modal-head"><div><div className="eyebrow">CONTA E FERRAMENTAS</div><h2 id="transfer-modal-title">Transferir configuração</h2><p>Leve as preferências deste perfil para outro dispositivo ou conta.</p></div><button className="icon-btn" aria-label="Fechar janela" onClick={close}>×</button></div>
+    <div className="transfer-source"><Icon name="user" size={18}/><span>Perfil de origem</span><b title={sourceLabel}>{sourceLabel}</b></div>
+    <section className="transfer-card"><div className="transfer-card-heading"><span className="transfer-card-icon"><Icon name="external" size={18}/></span><div><h3>Exportar um pacote</h3><p>Escolha quais partes deste perfil incluir no arquivo.</p></div></div>
+      <div className="transfer-checks">{Object.entries(parts).map(([k,v])=><label key={k} className="check-line"><input type="checkbox" checked={v} onChange={()=>toggle(k)}/><span>{labelPart(k)}</span></label>)}</div>
+      <p className="transfer-safe-note">Senhas e tokens não são incluídos. Addons levam somente URL, nome, estado e ordem.</p>
+      <button className="primary full" disabled={!!backupStatus} onClick={()=>exportPackage(parts)}>{backupStatus||'Exportar partes selecionadas'}</button>
+    </section>
+    <div className="transfer-or"><span>ou</span></div>
+    <section className="transfer-card transfer-import-card"><div className="transfer-card-heading"><span className="transfer-card-icon"><Icon name="transfer" size={18}/></span><div><h3>Importar um pacote</h3><p>Selecione um arquivo JSON e escolha o que aplicar no perfil conectado.</p></div></div><button className="ghost full" disabled={!!backupStatus} onClick={onImportFile}>{backupStatus||'Selecionar arquivo JSON'}</button></section>
   </div></div>
 }
-function TransferImportModal({pkg,close,onApply,saving}:any){
+function TransferImportModal({pkg,close,onApply,saving,backupStatus}:any){
   const available=Object.keys(pkg.parts||{})
-  const [profile,setProfile]=useState(0)
   const [mode,setMode]=useState<'merge'|'replace'>('merge')
   const [selected,setSelected]=useState<Record<string,boolean>>(()=>Object.fromEntries(available.map(k=>[k,true])))
-  return <div className="modal-backdrop"><div className="modal transfer-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-import-title"><div className="modal-head"><div><div className="eyebrow">PACOTE DE TRANSFERÊNCIA</div><h2 id="transfer-import-title">Importar configuração</h2></div><button className="icon-btn" aria-label="Fechar janela" onClick={close}>×</button></div>
-    <div className="transfer-preview"><b>{pkg.profile?.name||'Perfil sem nome'}</b><span>Exportado em {pkg.exportedAt?new Date(pkg.exportedAt).toLocaleString('pt-BR'):'—'}</span></div>
-    <label className="form-label">Modo de importação<select value={mode} onChange={e=>setMode(e.target.value as any)}><option value="merge">Mesclar com o que já existe</option><option value="replace">Substituir a seção selecionada</option></select></label>
-    <p className="security-note">Mesclar é a opção mais segura: itens do pacote são adicionados/atualizados sem apagar o restante. Substituir troca a seção inteira e cria um backup automático antes.</p>
-    <div className="transfer-checks">{available.map(k=><label key={k} className="check-line"><input type="checkbox" checked={selected[k]!==false} onChange={e=>setSelected({...selected,[k]:e.target.checked})}/>{labelPart(k)} <small className="muted">{Array.isArray(pkg.parts[k])?`${pkg.parts[k].length} itens`:pkg.parts[k]?.items?`${pkg.parts[k].items.length} catálogos`:'configuração'}</small></label>)}</div>
-    <div className="modal-actions"><button className="ghost" onClick={close}>Cancelar</button><button className="primary" disabled={saving||!Object.values(selected).some(Boolean)} onClick={()=>onApply(pkg,selected,mode)}>{saving?'Importando…':'Importar para a conta atual'}</button></div>
+  return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&!saving&&close()}><div className="modal transfer-modal transfer-import-modal" role="dialog" aria-modal="true" aria-labelledby="transfer-import-title"><div className="modal-head"><div><div className="eyebrow">PRÉVIA DO ARQUIVO</div><h2 id="transfer-import-title">Importar configuração</h2><p>Confira o conteúdo antes de aplicar no perfil conectado.</p></div><button className="icon-btn" aria-label="Fechar janela" disabled={saving} onClick={close}>×</button></div>
+    <div className="transfer-preview"><span className="eyebrow">PERFIL NO PACOTE</span><b title={pkg.profile?.name||'Perfil sem nome'}>{pkg.profile?.name||'Perfil sem nome'}</b><small>Exportado em {pkg.exportedAt?new Date(pkg.exportedAt).toLocaleString('pt-BR'):'data não informada'}</small></div>
+    <label className="form-label transfer-mode">Como combinar os dados?<select value={mode} onChange={e=>setMode(e.target.value as any)}><option value="merge">Mesclar com o perfil atual</option><option value="replace">Substituir cada parte selecionada</option></select></label>
+    <p className="transfer-safe-note">Mesclar preserva o que já existe. Substituir troca a parte escolhida e salva um ponto de segurança antes.</p>
+    <div className="transfer-checks">{available.map(k=><label key={k} className="check-line"><input type="checkbox" checked={selected[k]!==false} onChange={e=>setSelected({...selected,[k]:e.target.checked})}/><span>{labelPart(k)}</span><small>{Array.isArray(pkg.parts[k])?`${pkg.parts[k].length} itens`:pkg.parts[k]?.items?`${pkg.parts[k].items.length} catálogos`:'configuração'}</small></label>)}</div>
+    {backupStatus&&<div className="backup-progress" role="status"><span className="progress-spinner"/><span>{backupStatus}</span></div>}<div className="modal-actions"><button className="ghost" disabled={saving} onClick={close}>Cancelar</button><button className="primary" disabled={saving||!Object.values(selected).some(Boolean)} onClick={()=>onApply(pkg,selected,mode)}>{saving?(backupStatus||'Importando…'):'Importar para a conta atual'}</button></div>
   </div></div>
 }
 function labelPart(k:string){return ({addons:'Addons',plugins:'Plugins',collections:'Coleções',catalogs:'Catálogos',library:'Biblioteca',watchProgress:'Progresso',watchedItems:'Histórico de assistidos',progress:'Progresso',history:'Histórico'} as any)[k]||k}
-function persistTransferSnapshot(inv:Inventory){const existing=JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]');existing.unshift({...makeLocalSnapshot(inv),label:'backup automático da conta destino'});localStorage.setItem('nuvio-snapshots',JSON.stringify(existing.slice(0,30)))}
-function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.12.0',inventory:inv}}
+function makeComparisonSnapshot(inv:Inventory){
+  const sampleLimit=250
+  const categories=['addons','plugins','collections','watchProgress','library','watchedItems'] as const
+  const profiles=(inv?.profiles||[]).map((record:any,index:number)=>{
+    const profile={profile_index:profileId(record)||index+1,id:record.profile?.id,name:String(record.profile?.name||`Perfil ${index+1}`)}
+    const snapshotCounts:Record<string,number>={}
+    const compact=(item:any)=>({id:item?.id??item?.uuid??null,url:item?.url??item?.repository??null,name:String(item?.name||item?.display_name||item?.title||item?.name_en||item?.url||item?.id||'Item sem nome')})
+    const next:any={profile,snapshotCounts}
+    for(const key of categories){const values=Array.isArray(record?.[key])?record[key]:[];snapshotCounts[key]=values.length;next[key]=values.slice(0,sampleLimit).map(compact)}
+    const settings=record?.catalogSettings?.items||[]
+    snapshotCounts.catalogs=settings.length
+    next.catalogSettings={...record?.catalogSettings,items:settings.slice(0,sampleLimit).map((item:any)=>({addon_id:item.addon_id,type:item.type,catalog_id:item.catalog_id,collection_id:item.collection_id,is_collection:item.is_collection,enabled:item.enabled,order:item.order,custom_title:item.custom_title}))}
+    return next
+  })
+  return{schemaVersion:1,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.12.0',inventory:{fetchedAt:inv?.fetchedAt||new Date().toISOString(),profiles}}
+}
 
 function AddonProfileTransferModal({item,sourceIndex,profiles,catalogPreferenceCount,saving,dirty,close,onCopy}:any){
  const [selected,setSelected]=useState<number[]>([]),[includeSettings,setIncludeSettings]=useState(true)
@@ -923,17 +983,28 @@ function AddonProfileTransferModal({item,sourceIndex,profiles,catalogPreferenceC
 
 function Drawer({title,close,children}:any){return <div className="drawer-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><aside className="drawer" role="dialog" aria-modal="true" aria-labelledby="app-drawer-title"><div className="drawer-head"><div><div className="eyebrow">DETALHES</div><h2 id="app-drawer-title">{title}</h2></div><button className="icon-btn" onClick={close} aria-label="Fechar detalhes">×</button></div>{children}</aside></div>}
 function SimpleModal({title,close,children}:any){return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="app-modal-title"><div className="modal-head"><div><div className="eyebrow">CONTROLE</div><h2 id="app-modal-title">{title}</h2></div><button className="icon-btn" onClick={close} aria-label="Fechar janela">×</button></div>{children}</div></div>}
-function SnapshotModal({current,compare,close,onExport,onImport}:any){
-  const saved=typeof window!=='undefined'?JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]'):[]
-  return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal" role="dialog" aria-modal="true" aria-labelledby="snapshot-modal-title"><div className="modal-head"><div><div className="eyebrow">BACKUP E SNAPSHOT</div><h2 id="snapshot-modal-title">{compare?'Comparação de backup':'Proteção da configuração'}</h2></div><button className="icon-btn" aria-label="Fechar janela" onClick={close}>×</button></div>
-    {compare?<Compare current={current} previous={compare}/>:<><div className="snapshot-explain"><div className="big-check">✓</div><div><h3>Seu backup é útil, sim</h3><p>Ele é uma fotografia da configuração naquele momento. O painel cria backups automáticos antes de salvar alterações e também permite exportar/importar um arquivo para guardar fora do navegador.</p></div></div><div className="mini-stats"><span>{current.profiles.length} perfis</span><span>{saved.length} backups locais</span><span>até 30 versões</span></div><div className="snapshot-actions"><button className="primary" onClick={onExport}>Exportar backup</button><button className="ghost" onClick={onImport}>Importar backup</button><button className="ghost" disabled={!saved.length} onClick={()=>alert('O botão Comparar backup usa o backup local mais recente e mostra diferenças de quantidade e itens. Para restaurar uma conta, use a transferência por arquivo e selecione o que deseja importar.')}>Para que serve?</button></div><div className="security-note">Importar um backup pelo botão acima apenas abre o conteúdo para consulta. Ele não altera sua conta automaticamente. Para aplicar dados em outra conta, use <b>Transferência por arquivo</b>.</div></>}
+function SnapshotModal({current,compare,close,onSave,onExport,onImport,onCompare,savedCount,backupStatus}:any){
+  return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&!backupStatus&&close()}><div className="modal snapshot-modal" role="dialog" aria-modal="true" aria-labelledby="snapshot-modal-title"><div className="modal-head"><div><div className="eyebrow">CONTA E FERRAMENTAS</div><h2 id="snapshot-modal-title">{compare?'Comparar versões':'Backups e snapshots'}</h2><p>Proteja uma cópia ou veja o que mudou na configuração.</p></div><button className="icon-btn" aria-label="Fechar janela" disabled={!!backupStatus} onClick={close}>×</button></div>
+    {compare?<Compare current={current} previous={compare}/>:<><div className="snapshot-overview"><div className="snapshot-overview-mark"><Icon name="backup" size={21}/></div><div><b>Escolha como proteger seus dados</b><p>O ponto local serve para comparar versões. O backup exportado inclui os dados disponíveis e pode ser guardado como arquivo.</p></div></div>
+      <div className="snapshot-stats"><div><span>Perfis</span><b>{current.profiles.length}</b></div><div><span>Pontos locais</span><b>{savedCount}</b></div><div><span>Retenção</span><b>30 versões</b></div></div>
+      {backupStatus&&<div className="backup-progress" role="status"><span className="progress-spinner"/><span>{backupStatus}</span></div>}
+      <div className="snapshot-action-grid"><section><span className="eyebrow">PONTO LOCAL</span><h3>Salvar para comparar depois</h3><p>Guarda uma amostra compacta dos perfis, sem carregar todo o histórico nem travar a tela.</p><button className="ghost" disabled={!!backupStatus} onClick={onSave}>Salvar ponto local</button></section><section><span className="eyebrow">COMPARAÇÃO</span><h3>Ver diferenças</h3><p>Compara o ponto salvo mais recente com o que está carregado agora.</p><button className="ghost" disabled={!!backupStatus||!savedCount} onClick={onCompare}>{savedCount?'Comparar versões':'Salve um ponto primeiro'}</button></section><section><span className="eyebrow">ARQUIVO COMPLETO</span><h3>Exportar backup</h3><p>Prepara um arquivo JSON com os dados do perfil, incluindo biblioteca e histórico disponíveis.</p><button className="primary" disabled={!!backupStatus} onClick={onExport}>{backupStatus||'Preparar e exportar backup'}</button></section></div>
+      <div className="snapshot-import-row"><div><b>Abrir um backup existente</b><small>O arquivo abre em modo de consulta e não altera sua conta.</small></div><button className="ghost" disabled={!!backupStatus} onClick={onImport}>Selecionar arquivo</button></div>
+      <div className="snapshot-footnote">Para aplicar configurações em outra conta, use <b>Transferência por arquivo</b>. Ela permite selecionar partes e mesclar ou substituir cada uma.</div>
+    </>}
   </div></div>
 }
+const COMPARE_KEYS = [['addons','Addons'],['plugins','Plugins'],['collections','Coleções'],['catalogs','Catálogos'],['watchProgress','Progresso'],['library','Biblioteca'],['watchedItems','Histórico']] as const
+function compareRows(profile:any,key:string){return key==='catalogs'?(profile?.catalogSettings?.items||[]):(profile?.[key]||[])}
+function compareLabel(item:any){return String(item?.name||item?.display_name||item?.title||item?.name_en||item?.url||item?.repository||item?.catalog_id||item?.id||'Item sem nome')}
+function compareIdentity(item:any){return String(item?.url||item?.repository||item?.addon_id||item?.catalog_id||item?.id||item?.uuid||compareLabel(item).trim().toLocaleLowerCase())}
 function Compare({current,previous}:any){
-  const count=(inv:any,key:string)=>(inv?.profiles||[]).reduce((n:number,p:any)=>n+(p[key]?.length||0),0)
-  const label=(x:any)=>String(x?.name||x?.display_name||x?.title||x?.url||x?.id||'Sem nome')
-  const diff=(key:string)=>{const a=(previous?.profiles||[]).flatMap((p:any)=>p[key]||[]).map(label);const b=(current?.profiles||[]).flatMap((p:any)=>p[key]||[]).map(label);return {added:b.filter((x:string)=>!a.includes(x)).slice(0,12),removed:a.filter((x:string)=>!b.includes(x)).slice(0,12)}}
-  const keys=[['addons','Addons'],['plugins','Plugins'],['collections','Coleções'],['watchProgress','Progresso'],['library','Biblioteca'],['watchedItems','Histórico']]
-  return <div><p className="muted">Comparação do backup mais recente com o estado atual. Não é uma previsão: mostra o que mudou entre as duas fotografias.</p><div className="compare-grid">{keys.map(([k,l])=>{const d=count(current,k)-count(previous,k);return <div key={k}><span>{l}</span><b>{count(previous,k)} → {count(current,k)}</b><small>{d===0?'Sem alteração':`${d>0?'+':''}${d} itens`}</small></div>})}</div><div className="diff-list">{keys.map(([k,l])=>{const d=diff(k);if(!d.added.length&&!d.removed.length)return null;return <div className="diff-block" key={k}><b>{l}</b>{d.added.length>0&&<div><span className="diff-added">Adicionados</span>{d.added.map((x:string,i:number)=><small key={i}>+ {x}</small>)}</div>}{d.removed.length>0&&<div><span className="diff-removed">Removidos</span>{d.removed.map((x:string,i:number)=><small key={i}>− {x}</small>)}</div>}</div>})}</div></div>
+  const [result,setResult]=useState<any>(null)
+  useEffect(()=>{let active=true;const timer=window.setTimeout(()=>{
+    const build=(inventory:any,key:string)=>{const items=new Map<string,string>();let total=0;(inventory?.profiles||[]).forEach((profile:any,index:number)=>{const rows=compareRows(profile,key),profileName=String(profile?.profile?.name||`Perfil ${index+1}`),profileKey=String(profile?.profile?.profile_index||profile?.profile?.id||index+1);total+=Number(profile?.snapshotCounts?.[key]??rows.length);for(const item of rows.slice(0,250)){const id=compareIdentity(item),label=compareLabel(item);items.set(`${profileKey}/${id}`,`${profileName} · ${label}`)}});return{items,total}}
+    const rows=COMPARE_KEYS.map(([key,label])=>{const before=build(previous,key),after=build(current,key);const added:string[]=[],removed:string[]=[];after.items.forEach((name,id)=>{if(!before.items.has(id)&&added.length<12)added.push(name)});before.items.forEach((name,id)=>{if(!after.items.has(id)&&removed.length<12)removed.push(name)});return{key,label,before:before.total,after:after.total,added,removed}})
+    if(active)setResult(rows)
+  },30);return()=>{active=false;window.clearTimeout(timer)}},[current,previous])
+  if(!result)return <div className="compare-loading" role="status"><span className="progress-spinner"/><span>Preparando a comparação…</span></div>
+  return <div className="compare-content"><p className="compare-intro">Ponto local mais recente comparado com o estado atual. As contagens são completas; para manter a tela rápida, as diferenças analisam até 250 itens por perfil e exibem até 12 exemplos por seção.</p><div className="compare-grid">{result.map((item:any)=><div key={item.key}><span>{item.label}</span><b>{item.before.toLocaleString('pt-BR')} <i>→</i> {item.after.toLocaleString('pt-BR')}</b><small>{item.after===item.before?'Sem alteração':`${item.after-item.before>0?'+':''}${(item.after-item.before).toLocaleString('pt-BR')} itens`}</small></div>)}</div><div className="diff-list">{result.map((item:any)=>!item.added.length&&!item.removed.length?null:<section className="diff-block" key={item.key}><h3>{item.label}</h3>{item.added.length>0&&<div><span className="diff-added">Adicionados</span>{item.added.map((name:string,i:number)=><small key={`${name}-${i}`}>+ {name}</small>)}</div>}{item.removed.length>0&&<div><span className="diff-removed">Removidos</span>{item.removed.map((name:string,i:number)=><small key={`${name}-${i}`}>− {name}</small>)}</div>}</section>)}</div>{result.every((item:any)=>!item.added.length&&!item.removed.length)&&<div className="compare-empty">Nenhuma diferença foi encontrada na amostra comparada.</div>}</div>
 }
-function ImportModal({close,fileRef,importSnapshot}:any){return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal small-modal" role="dialog" aria-modal="true" aria-labelledby="snapshot-import-title"><div className="modal-head"><div><div className="eyebrow">IMPORTAÇÃO</div><h2 id="snapshot-import-title">Abrir snapshot</h2></div><button className="icon-btn" aria-label="Fechar janela" onClick={close}>×</button></div><p className="muted">O arquivo é lido localmente e não altera a conta.</p><button className="primary full" onClick={()=>fileRef.current?.click()}>Selecionar JSON</button><input ref={fileRef} type="file" accept=".json,application/json" hidden onChange={e=>e.target.files?.[0]&&importSnapshot(e.target.files[0])}/></div></div>}
