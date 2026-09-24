@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
     const token = String(body?.token || '')
     const profileId = Number(body?.profileId)
     const kind = String(body?.kind || '')
-    if (!token || !profileId || !kind) return NextResponse.json({ error: 'Token, profileId e operação são obrigatórios.' }, { status: 400 })
+    if (!token || token.length > 16_000 || !Number.isInteger(profileId) || profileId < 1 || profileId > 6 || !kind) return NextResponse.json({ error: 'Token, profileId válido e operação são obrigatórios.' }, { status: 400 })
 
     if (kind === 'addons') {
       const addons = Array.isArray(body?.items) ? body.items.map(cleanAddon).filter((x: any) => x.url) : []

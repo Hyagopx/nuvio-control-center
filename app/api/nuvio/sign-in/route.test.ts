@@ -17,7 +17,9 @@ describe('POST /api/nuvio/sign-in', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ access_token: 'access', refresh_token: 'refresh', user: { id: 'u1' } }), { status: 200 })))
     const response = await POST(new NextRequest('http://localhost/api/nuvio/sign-in', { method: 'POST', body: JSON.stringify({ email: 'person@example.com', password: 'secret' }) }))
     expect(response.status).toBe(200)
-    await expect(response.json()).resolves.toMatchObject({ access_token: 'access', refresh_token: 'refresh' })
+    await expect(response.json()).resolves.toMatchObject({ access_token: 'access' })
+    expect(response.headers.get('set-cookie')).toContain('nuvio-refresh=refresh')
+    expect(response.headers.get('set-cookie')).toContain('HttpOnly')
   })
 
   it('does not turn rejected cloud credentials into a successful session', async () => {

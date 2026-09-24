@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
     const profileId = Number(body?.profileId)
     const kind = String(body?.kind || '')
     const page = Math.max(1, Math.floor(Number(body?.page) || 1))
-    if (!token || !Number.isInteger(profileId) || profileId < 1 || profileId > 6) return NextResponse.json({ error: 'Token e perfil válidos são obrigatórios.' }, { status: 400 })
+    if (!token || token.length > 16_000 || !Number.isInteger(profileId) || profileId < 1 || profileId > 6) return NextResponse.json({ error: 'Token e perfil válidos são obrigatórios.' }, { status: 400 })
     if (kind !== 'library' && kind !== 'history') return NextResponse.json({ error: 'Tipo de dados não suportado.' }, { status: 400 })
     if (page > 500) return NextResponse.json({ error: 'O limite de páginas foi atingido.' }, { status: 400 })
     const rows = kind === 'library'

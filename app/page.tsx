@@ -23,7 +23,7 @@ const NAV = [
 const EMPTY_PROFILE: ProfileRecord = { profile: {}, addons: [], plugins: [], collections: [], watchProgress: [], watchedItems: [], library: [], catalogSettings: null }
 type Snapshot = { schemaVersion: number; exportedAt: string; source: string; inventory: Inventory }
 type Health = { health?: 'healthy' | 'attention' | 'fail' | 'unknown'; latencyMs?: number; error?: string; healthReason?: string; manifest?: any; catalogTests?: any[]; summary?: any; phase?: string }
-type Session = { email: string; refresh_token: string }
+type Session = { email?: string; remember?: boolean; refresh_token?: string }
 
 function recordManifestChange(profile:number,url:string,manifest:any){
   const fingerprint=(value:any)=>{const stable=(v:any):string=>JSON.stringify(v,(k,x)=>x&&typeof x==='object'&&!Array.isArray(x)?Object.keys(x).sort().reduce((o:any,key)=>{o[key]=x[key];return o},{ }):x);let hash=2166136261;for(const char of stable(value)){hash^=char.charCodeAt(0);hash=Math.imul(hash,16777619)}return (hash>>>0).toString(16)}
@@ -36,7 +36,6 @@ export default function Home() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [token, setToken] = useState('')
-  const [refreshToken, setRefreshToken] = useState('')
   const [remember, setRemember] = useState(true)
   const [booting, setBooting] = useState(true)
   const [inv, setInv] = useState<Inventory | null>(null)
@@ -84,22 +83,47 @@ export default function Home() {
   function installServerInventory(fresh:Inventory) { serverBaselineRef.current = structuredClone(fresh); setInv(fresh) }
 
   useEffect(() => {
-    const raw = localStorage.getItem('nuvio-session')
-    if (!raw) { setBooting(false); return }
+    let session: Session | null = null
     try {
-      const session: Session = JSON.parse(raw)
-      setEmail(session.email)
-      fetch('/api/nuvio/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refresh_token: session.refresh_token }) })
-        .then(async r => { const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Sessão expirada'); return d })
-        .then(async d => {
-          setToken(d.access_token); setRefreshToken(d.refresh_token || session.refresh_token)
-          localStorage.setItem('nuvio-session', JSON.stringify({ email: session.email, refresh_token: d.refresh_token || session.refresh_token }))
-          const next = await fetchInventoryStatic(d.access_token)
-          installServerInventory(next)
+      const raw = localStorage.getItem('nuvio-session')
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') session = parsed as Session
+        if (session?.email) setEmail(session.email)
+        setRemember(session?.remember === true || Boolean(session?.refresh_token))
+      }
+    } catch { localStorage.removeItem('nuvio-session') }
+    const restore = async () => {
+      try {
+        const response = await fetch('/api/nuvio/refresh', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          // Supports a one-time migration from the old localStorage session.
+          body: JSON.stringify({ remember: session?.remember === true || Boolean(session?.refresh_token), ...(session?.refresh_token ? { refresh_token: session.refresh_token } : {}) }),
         })
-        .catch(() => localStorage.removeItem('nuvio-session'))
-        .finally(() => setBooting(false))
-    } catch { localStorage.removeItem('nuvio-session'); setBooting(false) }
+        const data = await response.json()
+        if (!response.ok) {
+          if (response.status === 400 || response.status === 401) {
+            localStorage.removeItem('nuvio-session')
+            await fetch('/api/nuvio/logout', { method: 'POST' }).catch(() => undefined)
+          }
+          return
+        }
+        const emailAddress = data.user?.email || session?.email || ''
+        setEmail(emailAddress)
+        setToken(data.access_token)
+        if (session?.remember === true || session?.refresh_token) {
+          localStorage.setItem('nuvio-session', JSON.stringify({ email: emailAddress, remember: true }))
+          setRemember(true)
+        } else {
+          localStorage.removeItem('nuvio-session')
+          setRemember(false)
+        }
+        const next = await fetchInventoryStatic(data.access_token)
+        installServerInventory(next)
+      } catch { /* Preserve a potentially valid cookie during temporary network failures. */ }
+      finally { setBooting(false) }
+    }
+    void restore()
   }, [])
 
   useEffect(() => {
@@ -179,16 +203,16 @@ export default function Home() {
   async function login(e: React.FormEvent) {
     e.preventDefault(); setLoading(true); setError(''); setNotice('')
     try {
-      const r = await fetch('/api/nuvio/sign-in', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
+      const r = await fetch('/api/nuvio/sign-in', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, remember }) })
       const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha no login')
       const next = await fetchInventory(d.access_token)
-      setToken(d.access_token); setRefreshToken(d.refresh_token || ''); installServerInventory(next); setPassword(''); setActive(0); setTab('overview'); setDirty(false)
-      if (remember && d.refresh_token) localStorage.setItem('nuvio-session', JSON.stringify({ email, refresh_token: d.refresh_token }))
+      setToken(d.access_token); installServerInventory(next); setPassword(''); setActive(0); setTab('overview'); setDirty(false)
+      if (remember) localStorage.setItem('nuvio-session', JSON.stringify({ email, remember: true }))
       else localStorage.removeItem('nuvio-session')
     } catch (e: any) { setError(e.message || 'Erro') } finally { setLoading(false) }
   }
 
-  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.9', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
+  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.10', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
   function persistSnapshot(customInv = inv, label = '') {
     if (!customInv) return false
     const partialSections=partialSectionsFor(customInv)
@@ -204,7 +228,7 @@ export default function Home() {
     try { const complete=await completeInventoryForBackup(customInv); const partial=partialSectionsFor(complete); const b = new Blob([JSON.stringify({...makeSnapshot(complete),partialSections:partial}, null, 2)], { type: 'application/json' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = `nuvio-backup-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(u), 500); if(partial.length)setNotice('Backup exportado parcialmente; ele indica os dados que não estavam carregados.') } catch(e:any) { setError(e.message||'Falha ao exportar backup completo.') }
   }
   function importSnapshot(file: File) {
-    const reader = new FileReader(); reader.onload = () => { try { const raw = JSON.parse(String(reader.result)); const data = normalizeInventory(raw?.inventory?.profiles ? raw.inventory : raw); serverBaselineRef.current = null; setInv(data); setToken(''); setRefreshToken(''); setEmail(''); setActive(0); setTab('overview'); setSelected(null); setImportOpen(false); setDirty(false); setError(''); setNotice('Backup aberto somente para consulta. Ele não altera a conta.'); } catch (e: any) { setError(e.message || 'Backup inválido.') } }; reader.readAsText(file)
+    const reader = new FileReader(); reader.onload = () => { try { const raw = JSON.parse(String(reader.result)); const data = normalizeInventory(raw?.inventory?.profiles ? raw.inventory : raw); serverBaselineRef.current = null; setInv(data); setToken(''); localStorage.removeItem('nuvio-session'); void fetch('/api/nuvio/logout',{method:'POST'}); setEmail(''); setActive(0); setTab('overview'); setSelected(null); setImportOpen(false); setDirty(false); setError(''); setNotice('Backup aberto somente para consulta. Ele não altera a conta.'); } catch (e: any) { setError(e.message || 'Backup inválido.') } }; reader.readAsText(file)
   }
   function openCompare() { const saved = readLocalSnapshots(localStorage); if (saved.length) { setCompare(normalizeInventory(saved[0].inventory)); setNotice(saved[0].partialSections?.length?`Este snapshot local é parcial; ainda não incluía ${saved[0].partialSections.length} conjunto(s) que não haviam sido carregados.`:'Snapshot completo carregado para comparação.'); setSnapshotOpen(true) } else setError('Ainda não há backups locais.') }
 
@@ -216,7 +240,7 @@ export default function Home() {
   function downloadTransferPackage(parts: Record<string,boolean>) {
     if (!inv) return
     const source = p
-    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.9', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
+    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.10', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
     const b = new Blob([JSON.stringify(packageData,null,2)], {type:'application/json'}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`nuvio-transfer-${String(profileLabel).replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(u),500)
   }
   function openTransferPackage(file: File) {
@@ -507,7 +531,7 @@ export default function Home() {
   function mergeCatalogSettings(target:CatalogSettings|null, incoming:CatalogSettings, mode:'merge'|'replace'):CatalogSettings { if(mode==='replace') return structuredClone(incoming); const base:CatalogSettings = target || {hide_unreleased_content:false,items:[]}; const map=new Map(base.items.map(x=>[catalogCloudKey(x.addon_id,x.type,x.catalog_id),x])); for(const x of incoming.items||[]) map.set(catalogCloudKey(x.addon_id,x.type,x.catalog_id),x); return {...base, ...incoming, items:Array.from(map.values())} }
 
   function navigate(id: string) { setTab(id); setQuery(''); setSelected(null); setProfileDataError(''); setMobileNavOpen(false) }
-  function logout() { localStorage.removeItem('nuvio-session'); setInv(null); setToken(''); setRefreshToken(''); setDiag({}); setSelected(null); setCompare(null); setDirty(false); setNotice('') }
+  function logout() { localStorage.removeItem('nuvio-session'); void fetch('/api/nuvio/logout',{method:'POST'}); setInv(null); setToken(''); setDiag({}); setSelected(null); setCompare(null); setDirty(false); setNotice('') }
 
   if (booting) return <div className="login-wrap"><div className="login-card"><div className="brand large"><b>NUVIO</b><span>CONTROL</span></div><div className="login-copy"><h1>Restaurando sessão…</h1><p>Verificando a sessão salva sem pedir sua senha novamente.</p></div></div></div>
   if (!inv) return <Login email={email} setEmail={setEmail} password={password} setPassword={setPassword} loading={loading} error={error} remember={remember} setRemember={setRemember} onSubmit={login} onImport={() => fileRef.current?.click()} fileRef={fileRef} importSnapshot={importSnapshot} />
@@ -756,7 +780,7 @@ function TransferImportModal({pkg,close,onApply,saving}:any){
 }
 function labelPart(k:string){return ({addons:'Addons',plugins:'Plugins',collections:'Coleções',catalogs:'Catálogos',library:'Biblioteca',watchProgress:'Progresso',watchedItems:'Histórico de assistidos',progress:'Progresso',history:'Histórico'} as any)[k]||k}
 function persistTransferSnapshot(inv:Inventory){const existing=JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]');existing.unshift({...makeLocalSnapshot(inv),label:'backup automático da conta destino'});localStorage.setItem('nuvio-snapshots',JSON.stringify(existing.slice(0,30)))}
-function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.9',inventory:inv}}
+function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.10',inventory:inv}}
 
 function AddonProfileTransferModal({item,sourceIndex,profiles,catalogPreferenceCount,saving,dirty,close,onCopy}:any){
  const [selected,setSelected]=useState<number[]>([]),[includeSettings,setIncludeSettings]=useState(true)
