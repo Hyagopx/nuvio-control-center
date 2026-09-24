@@ -49,9 +49,11 @@ export default function Home() {
   const [profileDataError, setProfileDataError] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [diag, setDiag] = useState<Record<string, Health>>({})
-  const [diagLoading, setDiagLoading] = useState(false)
-  const [diagProgress, setDiagProgress] = useState({ completed: 0, total: 0 })
+  const [diagnosticsByProfile, setDiagnosticsByProfile] = useState<Record<string, Record<string, Health>>>({})
+  const [diagnosticLoadingByProfile, setDiagnosticLoadingByProfile] = useState<Record<string, boolean>>({})
+  const [diagnosticProgressByProfile, setDiagnosticProgressByProfile] = useState<Record<string, { completed: number; total: number }>>({})
+  const diagnosticRunsRef = useRef(new Map<string, number>())
+  const diagnosticSessionRef = useRef(0)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<any | null>(null)
   const [snapshotOpen, setSnapshotOpen] = useState(false)
@@ -79,6 +81,10 @@ export default function Home() {
   const profileDataRequestRef = useRef<string | null>(null)
 
   const p = inv?.profiles?.[active] || inv?.profiles?.[0] || EMPTY_PROFILE
+  const activeProfileKey = String(profileId(p))
+  const diag = diagnosticsByProfile[activeProfileKey] || {}
+  const diagLoading = diagnosticLoadingByProfile[activeProfileKey] === true
+  const diagProgress = diagnosticProgressByProfile[activeProfileKey] || { completed: 0, total: 0 }
   const counts = { addons: p.addons.length, plugins: p.plugins.length, collections: p.collections.length, progress: p.watchProgress.length, library: p.libraryLoaded === false ? '—' : p.library.length, watched: p.watchedItemsLoaded === false ? '—' : p.watchedItems.length }
   function installServerInventory(fresh:Inventory) { serverBaselineRef.current = structuredClone(fresh); setInv(fresh) }
 
@@ -133,9 +139,10 @@ export default function Home() {
   },[dirty])
 
   useEffect(() => {
-    if (!inv || !token || (tab !== 'catalogs' && tab !== 'addons') || Object.keys(diag).length) return
-    diagnose(p.addons)
-  }, [tab, inv, token])
+    if (!inv || !token || (tab !== 'catalogs' && tab !== 'addons')) return
+    if (!p.addons.some(addon => addon.url && !diag[addon.url])) return
+    void diagnose(p.addons, true)
+  }, [tab, inv, token, activeProfileKey, diag])
 
   useEffect(() => {
     if (tab === 'library' && p.libraryLoaded === false && !profileDataLoading && !profileDataError) void loadProfileData('library', false)
@@ -202,6 +209,9 @@ export default function Home() {
 
   async function login(e: React.FormEvent) {
     e.preventDefault(); setLoading(true); setError(''); setNotice('')
+    diagnosticSessionRef.current++
+    diagnosticRunsRef.current.clear()
+    setDiagnosticsByProfile({}); setDiagnosticLoadingByProfile({}); setDiagnosticProgressByProfile({})
     try {
       const r = await fetch('/api/nuvio/sign-in', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, remember }) })
       const d = await r.json(); if (!r.ok) throw new Error(d.error || 'Falha no login')
@@ -212,7 +222,7 @@ export default function Home() {
     } catch (e: any) { setError(e.message || 'Erro') } finally { setLoading(false) }
   }
 
-  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.10', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
+  function makeSnapshot(customInv = inv): Snapshot { return { schemaVersion: 4, exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.11.5', inventory: customInv || { fetchedAt: new Date().toISOString(), profiles: [] } } }
   function persistSnapshot(customInv = inv, label = '') {
     if (!customInv) return false
     const partialSections=partialSectionsFor(customInv)
@@ -240,7 +250,7 @@ export default function Home() {
   function downloadTransferPackage(parts: Record<string,boolean>) {
     if (!inv) return
     const source = p
-    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.10', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
+    const packageData = { schemaVersion: 1, kind: 'nuvio-transfer-package', exportedAt: new Date().toISOString(), source: 'Nuvio Control Center v0.11.5', profile: { name: profileLabel, profile_index: profileId(source) }, parts: Object.fromEntries(Object.entries(parts).filter(([,v])=>v).map(([k])=>[k, sanitizeTransferPart(k, (source as any)[k === 'catalogs' ? 'catalogSettings' : k])])), note: 'Pacote sem senhas. Addons são exportados somente com URL, nome, estado e ordem.' }
     const b = new Blob([JSON.stringify(packageData,null,2)], {type:'application/json'}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`nuvio-transfer-${String(profileLabel).replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(u),500)
   }
   function openTransferPackage(file: File) {
@@ -285,13 +295,38 @@ export default function Home() {
     } catch(e:any){if(completed.length){try{const fresh=await fetchInventory(token);installServerInventory(fresh)}catch{};setError(`${e.message||'Falha na importação'} Partes enviadas: ${completed.join(', ')}. A conta foi relida; confira as partes restantes antes de tentar novamente.`)}else setError(e.message||'Falha na importação')} finally {setSaving(false)}
   }
 
-  async function diagnose(rows: Addon[]) {
-    const urls = rows.map(x => x.url).filter(Boolean); if (!urls.length) return
-    setDiagLoading(true); setError(''); setNotice(''); setDiag({}); setDiagProgress({ completed: 0, total: urls.length })
+  async function diagnose(rows: Addon[], onlyMissing = false) {
+    const urls = rows.map(x => x.url).filter((url): url is string => typeof url === 'string' && url.length > 0); if (!urls.length) return
+    const profileKey = activeProfileKey
+    if (diagnosticRunsRef.current.has(profileKey)) return
+    const existing = diagnosticsByProfile[profileKey] || {}
+    const targets = onlyMissing ? urls.filter(url => !existing[url]) : urls
+    if (!targets.length) return
+    const diagnosticSession = diagnosticSessionRef.current
+    diagnosticRunsRef.current.set(profileKey, diagnosticSession)
+    setDiagnosticLoadingByProfile(previous => ({ ...previous, [profileKey]: true })); setError(''); setNotice('')
+    const setRunProgress = (progress: { completed: number; total: number }) => {
+      if (diagnosticSessionRef.current === diagnosticSession) setDiagnosticProgressByProfile(previous => ({ ...previous, [profileKey]: progress }))
+    }
+    setRunProgress({ completed: 0, total: targets.length })
+    const applyResult = (raw: any, phase = 'complete') => {
+      if (diagnosticSessionRef.current !== diagnosticSession) return
+      const result = { ...raw, phase: raw.phase || phase }
+      if (result.manifest) result.manifestChange = recordManifestChange(Number(profileKey), result.url, result.manifest)
+      setDiagnosticsByProfile(previous => ({ ...previous, [profileKey]: { ...(previous[profileKey] || {}), [result.url]: result } }))
+    }
     try {
-      const r = await fetch('/api/nuvio/diagnose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls }) })
+      const r = await fetch('/api/nuvio/diagnose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls: targets }) })
       if (!r.ok) { const d = await r.json(); throw new Error(d.error || 'Falha no diagnóstico') }
-      if (!r.body) throw new Error('O navegador não recebeu o fluxo do diagnóstico.')
+      if (!r.body || typeof r.body.getReader !== 'function') {
+        const fallback = await fetch('/api/nuvio/diagnose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls: targets, stream: false }) })
+        const data = await fallback.json()
+        if (!fallback.ok) throw new Error(data.error || 'Falha no diagnóstico')
+        for (const result of data.results || []) applyResult(result)
+        setRunProgress({ completed: targets.length, total: targets.length })
+        if (diagnosticSessionRef.current === diagnosticSession) setNotice(`Diagnóstico atualizado para ${(data.results || []).length} addon(s).`)
+        return
+      }
       const reader = r.body.getReader(), decoder = new TextDecoder()
       let buffer = '', receivedDone = false
       while (true) {
@@ -302,23 +337,33 @@ export default function Home() {
           const dataLine = event.split(/\r?\n/).find(line => line.startsWith('data:'))
           if (!dataLine) continue
           const message = JSON.parse(dataLine.slice(5).trim())
-          if (message.type === 'progress') setDiagProgress({ completed: message.completed, total: message.total })
+          if (message.type === 'progress') setRunProgress({ completed: message.completed, total: message.total })
           if (message.type === 'result') {
-            const result = { ...message.result, phase: message.phase }
-            if (result.manifest) result.manifestChange = recordManifestChange(profileId(p), result.url, result.manifest)
-            setDiag(previous => ({ ...previous, [result.url]: result }))
+            applyResult(message.result, message.phase)
           }
           if (message.type === 'error') throw new Error(message.error || 'Falha no diagnóstico')
           if (message.type === 'done') {
             receivedDone = true
-            setDiagProgress({ completed: message.completed, total: message.total })
-            setNotice(`Diagnóstico atualizado para ${message.completed} addon(s).`)
+            setRunProgress({ completed: message.completed, total: message.total })
+            if (diagnosticSessionRef.current === diagnosticSession) setNotice(`Diagnóstico atualizado para ${message.completed} addon(s).`)
           }
         }
         if (done) break
       }
       if (!receivedDone) throw new Error('O fluxo do diagnóstico terminou antes de confirmar todos os resultados.')
-    } catch (e: any) { setError(e.message || 'Falha no diagnóstico') } finally { setDiagLoading(false) }
+    } catch (e: any) {
+      try {
+        const fallback = await fetch('/api/nuvio/diagnose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ urls: targets, stream: false }) })
+        const data = await fallback.json()
+        if (!fallback.ok) throw new Error(data.error || 'Falha no diagnóstico')
+        for (const result of data.results || []) applyResult(result)
+        setRunProgress({ completed: targets.length, total: targets.length })
+        if (diagnosticSessionRef.current === diagnosticSession) setNotice(`Diagnóstico atualizado para ${(data.results || []).length} addon(s).`)
+      } catch (fallbackError: any) { if (diagnosticSessionRef.current === diagnosticSession) setError(fallbackError.message || e.message || 'Falha no diagnóstico') }
+    } finally {
+      if (diagnosticRunsRef.current.get(profileKey) === diagnosticSession) diagnosticRunsRef.current.delete(profileKey)
+      if (diagnosticSessionRef.current === diagnosticSession) setDiagnosticLoadingByProfile(previous => ({ ...previous, [profileKey]: false }))
+    }
   }
   function updateProfile(mutator: (current: ProfileRecord) => ProfileRecord) { if (!inv) return; const profiles = inv.profiles.map((x, i) => i === active ? mutator(x) : x); setInv({ ...inv, fetchedAt: new Date().toISOString(), profiles }); setDirty(true) }
   async function selectProfile(index:number) {
@@ -333,7 +378,7 @@ export default function Home() {
         installServerInventory(fresh); setActive(freshIndex); setDirty(false); setNotice('Alterações locais descartadas; dados atualizados da conta.')
       } catch (e:any) { setError(e.message || 'Não foi possível descartar as alterações.'); return }
     } else setActive(index)
-    setSelected(null); setQuery(''); setDiag({}); setProfileDataError('')
+    setSelected(null); setQuery(''); setProfileDataError('')
   }
 
   async function saveKind(kind: 'addons' | 'plugins' | 'collections', itemsOverride?: any[]) {
@@ -531,7 +576,7 @@ export default function Home() {
   function mergeCatalogSettings(target:CatalogSettings|null, incoming:CatalogSettings, mode:'merge'|'replace'):CatalogSettings { if(mode==='replace') return structuredClone(incoming); const base:CatalogSettings = target || {hide_unreleased_content:false,items:[]}; const map=new Map(base.items.map(x=>[catalogCloudKey(x.addon_id,x.type,x.catalog_id),x])); for(const x of incoming.items||[]) map.set(catalogCloudKey(x.addon_id,x.type,x.catalog_id),x); return {...base, ...incoming, items:Array.from(map.values())} }
 
   function navigate(id: string) { setTab(id); setQuery(''); setSelected(null); setProfileDataError(''); setMobileNavOpen(false) }
-  function logout() { localStorage.removeItem('nuvio-session'); void fetch('/api/nuvio/logout',{method:'POST'}); setInv(null); setToken(''); setDiag({}); setSelected(null); setCompare(null); setDirty(false); setNotice('') }
+  function logout() { diagnosticSessionRef.current++; diagnosticRunsRef.current.clear(); localStorage.removeItem('nuvio-session'); void fetch('/api/nuvio/logout',{method:'POST'}); setInv(null); setToken(''); setDiagnosticsByProfile({}); setDiagnosticLoadingByProfile({}); setDiagnosticProgressByProfile({}); setSelected(null); setCompare(null); setDirty(false); setNotice('') }
 
   if (booting) return <div className="login-wrap"><div className="login-card"><div className="brand large"><b>NUVIO</b><span>CONTROL</span></div><div className="login-copy"><h1>Restaurando sessão…</h1><p>Verificando a sessão salva sem pedir sua senha novamente.</p></div></div></div>
   if (!inv) return <Login email={email} setEmail={setEmail} password={password} setPassword={setPassword} loading={loading} error={error} remember={remember} setRemember={setRemember} onSubmit={login} onImport={() => fileRef.current?.click()} fileRef={fileRef} importSnapshot={importSnapshot} />
@@ -542,7 +587,7 @@ export default function Home() {
       <div className="brand"><div className="brand-wordmark"><b>NUVIO</b><span>CONTROL</span></div><button className="sidebar-collapse" aria-label={mobileNavOpen?'Fechar menu':sidebarCollapsed?'Expandir menu':'Recolher menu'} title={mobileNavOpen?'Fechar menu':sidebarCollapsed?'Expandir menu':'Recolher menu'} onClick={()=>{if(window.matchMedia('(max-width: 820px)').matches)setMobileNavOpen(false);else setSidebarCollapsed(v=>!v)}}>{mobileNavOpen?'×':sidebarCollapsed?'›':'‹'}</button></div>
       <div className="account-card"><div className="eyebrow">CONTA CONECTADA</div><div className="account-email">{email || 'Snapshot importado'}</div><small>{token ? 'Sessão ativa' : 'Somente leitura'}</small></div>
       <div className="nav"><div className="nav-label">PAINEL</div>{NAV.map(([id,label]) => <button key={id} title={sidebarCollapsed?label:undefined} className={tab===id?'active':''} onClick={() => navigate(id)}><span className="nav-mark" aria-hidden="true">{id==='overview'?'⌂':id==='addons'?'◉':id==='catalogs'?'▤':id==='plugins'?'◇':id==='collections'?'▣':id==='watch'?'◷':'▧'}</span><span className="nav-text">{label}</span><em>{id==='addons'?counts.addons:id==='catalogs'?catalogCount(p,diag):id==='plugins'?counts.plugins:id==='collections'?counts.collections:id==='watch'?counts.progress:id==='library'?counts.library:''}</em></button>)}</div>
-      <div className={`sidebar-utilities${utilitiesOpen?' open':''}`}><button className="utilities-toggle" aria-expanded={utilitiesOpen} onClick={()=>setUtilitiesOpen(v=>!v)}><span>Ferramentas e conta</span><span aria-hidden="true">{utilitiesOpen?'−':'+'}</span></button><div className="sidebar-tools"><button onClick={() => setTransferOpen(true)}><span className="utility-mark">⇄</span><span>Transferência por arquivo</span></button><button onClick={saveSnapshotLocal}><span className="utility-mark">▣</span><span>Backup / Snapshot</span></button><button onClick={openCompare}><span className="utility-mark">◫</span><span>Comparar backup</span></button></div><div className="sidebar-bottom"><button onClick={() => downloadSnapshot()}><span className="utility-mark">↓</span><span>Exportar backup</span></button><button onClick={logout}><span className="utility-mark">↪</span><span>{token ? 'Sair / desconectar' : 'Fechar backup'}</span></button></div></div>
+      <div className={`sidebar-utilities${utilitiesOpen?' open':''}`}><button className="utilities-toggle" aria-expanded={utilitiesOpen} onClick={()=>setUtilitiesOpen(v=>!v)}><span>Ferramentas e conta</span><span aria-hidden="true">{utilitiesOpen?'−':'+'}</span></button><div className="sidebar-tools"><button onClick={() => setTransferOpen(true)}><span className="utility-mark">⇄</span><span>Transferência por arquivo</span></button><button onClick={saveSnapshotLocal}><span className="utility-mark">▣</span><span>Backup / Snapshot</span></button><button onClick={openCompare}><span className="utility-mark">◫</span><span>Comparar backup</span></button></div><div className="sidebar-bottom"><button onClick={() => downloadSnapshot()}><span className="utility-mark">↓</span><span>Exportar backup</span></button><button onClick={logout}><span className="utility-mark">↪</span><span>{token ? 'Sair / desconectar' : 'Fechar backup'}</span></button></div></div><div className="creator-credit">por <b>ReiThomato</b></div>
     </aside>
     {mobileNavOpen&&<button className="mobile-nav-backdrop" aria-label="Fechar menu" onClick={()=>setMobileNavOpen(false)} />}
     <main className="content">
@@ -564,7 +609,7 @@ export default function Home() {
     {profileModal && <SimpleModal title="Renomear perfil" close={() => setProfileModal(false)}><label className="form-label">Nome do perfil<input value={profileName} onChange={e=>setProfileName(e.target.value)} /></label><div className="modal-actions"><button className="ghost" onClick={()=>setProfileModal(false)}>Cancelar</button><button className="primary" disabled={saving||!profileName.trim()} onClick={saveProfileName}>{saving?'Salvando…':'Salvar'}</button></div></SimpleModal>}
     {profileManagerOpen&&<ProfileManagerModal profiles={inv.profiles} avatarCatalog={inv.avatarCatalog||[]} saving={saving} draft={profileDraft} setDraft={setProfileDraft} editIndex={profileEditIndex} formOpen={profileFormOpen} openEditor={openProfileEditor} back={()=>setProfileFormOpen(false)} saveProfile={saveManagedProfile} clearPin={clearManagedProfilePin} close={()=>{setProfileManagerOpen(false);setProfileFormOpen(false);setProfileEditIndex(null)}} />}
     {addonTransfer && <AddonProfileTransferModal item={addonTransfer.item} sourceIndex={addonTransfer.sourceIndex} profiles={inv.profiles} catalogPreferenceCount={(inv.profiles[addonTransfer.sourceIndex]?.catalogSettings?.items||[]).filter((s:any)=>{const ids=[String(diag[addonTransfer.item.url||'']?.manifest?.id||''),String(addonTransfer.item.id||''),String(addonTransfer.item.url||''),addonKey(addonTransfer.item.url||'')].map(x=>x.toLowerCase());const saved=String(s.addon_id||s.addonId||'').toLowerCase();return ids.includes(saved)||ids.includes(addonKey(saved))}).length} saving={saving} dirty={dirty} close={()=>setAddonTransfer(null)} onCopy={copyAddonToProfiles} />}
-    {addonModal && <AddonEditor modal={addonModal} existing={p.addons} close={()=>setAddonModal(null)} save={(value:any)=>{ const existing=p.addons; if(addonModal.mode==='edit'){updateProfile(x=>({...x,addons:existing.map(a=>sameAddon(a,addonModal.item)?{...a,...value}:a)}))}else{const incoming=value.items.map((entry:any,i:number)=>({...entry.addon,sort_order:existing.length+i}));const previewCatalogs=value.items.flatMap((entry:any)=>flattenManifestCatalogs(entry.addon,entry.manifest));let catalogSettings=p.catalogSettings;if(previewCatalogs.length){catalogSettings=catalogSettingsForManifests(p.catalogSettings,[...allCatalogs(diag,existing),...previewCatalogs]);const chosen=new Set(value.items.flatMap((entry:any)=>entry.activeCatalogKeys||[]));catalogSettings={...catalogSettings,items:catalogSettings.items.map((item:any)=>chosen.has(catalogCloudKey(item.addon_id,item.type,item.catalog_id))?{...item,enabled:true}:item)}}updateProfile(x=>({...x,addons:[...existing,...incoming],catalogSettings}))}setDiag({});setTab('catalogs');setAddonModal(null) }} />}
+  {addonModal && <AddonEditor modal={addonModal} existing={p.addons} close={()=>setAddonModal(null)} save={(value:any)=>{ const existing=p.addons; if(addonModal.mode==='edit'){updateProfile(x=>({...x,addons:existing.map(a=>sameAddon(a,addonModal.item)?{...a,...value}:a)}))}else{const incoming=value.items.map((entry:any,i:number)=>({...entry.addon,sort_order:existing.length+i}));const previewCatalogs=value.items.flatMap((entry:any)=>flattenManifestCatalogs(entry.addon,entry.manifest));let catalogSettings=p.catalogSettings;if(previewCatalogs.length){catalogSettings=catalogSettingsForManifests(p.catalogSettings,[...allCatalogs(diag,existing),...previewCatalogs]);const chosen=new Set(value.items.flatMap((entry:any)=>entry.activeCatalogKeys||[]));catalogSettings={...catalogSettings,items:catalogSettings.items.map((item:any)=>chosen.has(catalogCloudKey(item.addon_id,item.type,item.catalog_id))?{...item,enabled:true}:item)}}updateProfile(x=>({...x,addons:[...existing,...incoming],catalogSettings}))}setTab('catalogs');setAddonModal(null) }} />}
     {collectionModal && <CollectionEditor value={collectionModal} close={()=>setCollectionModal(null)} catalogs={allCatalogs(diag,p.addons)} save={(x:any)=>{ const old=p.collections; const exists=old.some(v=>String(v.id)===String(x.id)); const next=exists?old.map(v=>String(v.id)===String(x.id)?x:v):[...old,x]; updateProfile(v=>({...v,collections:next})); setCollectionModal(null) }} />}
     {collectionImportOpen && <CollectionUrlModal close={()=>setCollectionImportOpen(false)} onImport={(data:any)=>{ const incoming=normalizeCollections(data); if(incoming.length){ updateProfile(v=>({...v,collections:[...v.collections,...incoming]})); setNotice(`${incoming.length} coleção(ões) importada(s) localmente.`); setCollectionImportOpen(false) } else setError('O JSON não contém coleções reconhecíveis.') }} />}
     {transferOpen && <TransferModal source={p} sourceLabel={profileLabel} close={()=>setTransferOpen(false)} exportPackage={downloadTransferPackage} onImportFile={()=>transferFileRef.current?.click()} />}{transferFileOpen && transferPackage && <TransferImportModal pkg={transferPackage} close={()=>{setTransferFileOpen(false);setTransferPackage(null)}} onApply={applyTransferPackage} saving={saving} />}
@@ -663,7 +708,7 @@ function AddonDrawer({item,diag,close,update,rows,token,profile,lastSync,onCopy}
  {analysis.parameters?.length>0&&<div className="manifest-parameters"><b>Parâmetros de catálogo</b>{analysis.parameters.map((f:any,i:number)=><span key={f.catalog+'-'+f.name+'-'+i}>{f.catalog}: {f.name}{f.required?' · obrigatório':' · opcional'}{f.options?.length?' · opções: '+f.options.join(', '):''}</span>)}</div>}
  {analysis.warnings?.length>0?<div className="manifest-warning-list"><b>{analysis.warnings.length} alerta(s) · atenção / não verificável</b>{analysis.warnings.map((w:any,i:number)=><span key={w.code+'-'+i}>! {w.message}</span>)}</div>:<p className="manifest-clean">✓ Campos principais do manifesto parecem completos.</p>}</section>}
  <h3>Testes de catálogo</h3>{diag?.catalogTests?.length?<div className="catalog-test-list">{diag.catalogTests.map((test:any,i:number)=><div key={test.id||test.catalogId||i}><b>{test.name||test.id||test.catalogId||'Catálogo '+(i+1)}</b><span className={test.pending?'attention':test.testable===false?'muted':test.protocolStatus==='unverified'?'attention':test.ok?'ok':'bad'}>{test.pending?'Verificando…':test.testable===false||test.protocolStatus==='unverified'?'Não verificável':test.ok?'Disponível':'Falhou'}{test.latencyMs?' · '+test.latencyMs+' ms':''}</span>{(test.error||test.reason)&&<small>{test.error||test.reason}</small>}</div>)}</div>:<p className="muted">Ainda não há testes de catálogo.</p>}
- <details className="manifest-raw"><summary>Dados técnicos completos</summary><pre>{JSON.stringify({manifest:diag?.manifest,manifestAnalysis:analysis,health:diag?.health,healthReason:diag?.healthReason,catalogTests:diag?.catalogTests?.map(({url,...test}:any)=>test),summary:diag?.summary},null,2)}</pre></details></Drawer>
+ <details className="manifest-raw"><summary>Dados técnicos completos</summary><pre>{JSON.stringify({manifest:diag?.manifest,manifestAnalysis:analysis,health:diag?.health,healthReason:diag?.healthReason,error:diag?.error,catalogTests:diag?.catalogTests?.map(({url,...test}:any)=>test),summary:diag?.summary},null,2)}</pre></details></Drawer>
 }
 function CatalogPage({profile,diag,diagLoading,diagProgress,q,setQ,token,saving,dirty,onChange,onRefresh}:any){
   const catalogs=allCatalogs(diag,profile.addons)
@@ -780,7 +825,7 @@ function TransferImportModal({pkg,close,onApply,saving}:any){
 }
 function labelPart(k:string){return ({addons:'Addons',plugins:'Plugins',collections:'Coleções',catalogs:'Catálogos',library:'Biblioteca',watchProgress:'Progresso',watchedItems:'Histórico de assistidos',progress:'Progresso',history:'Histórico'} as any)[k]||k}
 function persistTransferSnapshot(inv:Inventory){const existing=JSON.parse(localStorage.getItem('nuvio-snapshots')||'[]');existing.unshift({...makeLocalSnapshot(inv),label:'backup automático da conta destino'});localStorage.setItem('nuvio-snapshots',JSON.stringify(existing.slice(0,30)))}
-function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.10',inventory:inv}}
+function makeLocalSnapshot(inv:Inventory){return{schemaVersion:3,exportedAt:new Date().toISOString(),source:'Nuvio Control Center v0.11.5',inventory:inv}}
 
 function AddonProfileTransferModal({item,sourceIndex,profiles,catalogPreferenceCount,saving,dirty,close,onCopy}:any){
  const [selected,setSelected]=useState<number[]>([]),[includeSettings,setIncludeSettings]=useState(true)

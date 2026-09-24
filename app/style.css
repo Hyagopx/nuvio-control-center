@@ -288,3 +288,10 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   .addon-card-table tbody tr{margin:0;background:#191b20;border:1px solid #30343c;border-radius:14px;box-shadow:0 5px 15px #0002}
   .addon-card-table tbody tr:hover{background:#1d2026;border-color:#3a3e48}
 }
+/* Nuvio identity and discreet project credit */
+.brand-wordmark:before,.brand.large:before{content:"";display:inline-block;flex:0 0 auto;width:23px;height:23px;margin-right:7px;align-self:center;background:url('/icons/nuvio-app.svg') center/contain no-repeat;vertical-align:middle}
+.brand.large:before{width:32px;height:32px;margin-right:9px}
+.brand.large{display:flex;align-items:center}
+.mobile-topbar b:before{content:"";display:inline-block;width:19px;height:19px;margin-right:6px;vertical-align:-4px;background:url('/icons/nuvio-app.svg') center/contain no-repeat}
+.creator-credit{font-size:10px;color:#60606b;padding:10px 12px 0;border-top:1px solid #24242b}
+.creator-credit b{font-weight:600;color:#85818f}

@@ -81,7 +81,13 @@ function requestOnce(url: URL, resolved: { address: string; family: number }, op
     const request = requestFn(url, {
       method: 'GET',
       agent: false,
-      lookup: ((_hostname: string, _options: unknown, callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void) => callback(null, resolved.address, resolved.family)) as never,
+      lookup: ((_hostname: string, options: unknown, callback: (error: NodeJS.ErrnoException | null, address: string | Array<{ address: string; family: number }>, family?: number) => void) => {
+        // Node 20+ can request all addresses when autoSelectFamily is enabled.
+        // Its lookup callback must return an array in that mode; returning the
+        // legacy string/family pair makes Node attempt to connect to undefined.
+        if ((options as { all?: boolean } | undefined)?.all) callback(null, [resolved])
+        else callback(null, resolved.address, resolved.family)
+      }) as never,
       ...(url.protocol === 'https:' && isIP(hostname) === 0 ? { servername: hostname } : {}),
       headers: { Accept: options.accept, 'Accept-Encoding': 'identity', Connection: 'close', 'User-Agent': 'Nuvio-Control-Center/1.0' },
     }, response => {

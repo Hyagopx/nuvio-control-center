@@ -1,3 +1,43 @@
+# Nuvio Control Center v0.11.5 — Identidade Visual e Créditos
+
+- Adicionado um ícone vetorial inspirado na marca Nuvio para a aba e instalação como app.
+- Incluída a marca junto ao nome no painel e na tela de entrada.
+- Crédito discreto a ReiThomato na interface, README e metadados do pacote.
+
+# Nuvio Control Center v0.11.4 — Reorganização e Documentação do Repositório
+
+- README reescrito para refletir a aplicação web atual, sua stack e seus fluxos.
+- Adicionados guias de arquitetura, rotas da API, desenvolvimento e contribuição.
+- Removida a cópia órfã `page.txt`, que continha código de uma versão antiga sem participação no build.
+- Atualizada a identificação de versão nos snapshots e pacotes de transferência novos.
+
+# Nuvio Control Center v0.11.3 — Corrigir URLs Raiz dos Addons
+
+- A montagem de URLs de manifesto e catálogo agora altera diretamente o caminho da URL, evitando `//manifest.json` para addons instalados na raiz do domínio.
+- Parâmetros de consulta da URL do addon são preservados ao construir os endpoints.
+
+# Nuvio Control Center v0.11.2 — Correção DNS do Diagnóstico
+
+- O resolvedor de DNS fixado agora atende aos dois formatos de callback do Node: endereço único e lista solicitada pelo `autoSelectFamily`.
+- Isso corrige `Invalid IP address: undefined` em ambientes Node 20+ sem remover a validação de DNS público nem a proteção contra SSRF.
+
+# Nuvio Control Center v0.11.1 — Build Fix: URLs do Diagnóstico
+
+- O filtro dos endereços de addon agora estreita explicitamente o tipo para `string`, corrigindo o erro TypeScript no build da Vercel.
+
+# Nuvio Control Center v0.11 — Diagnóstico por Perfil
+
+## Diagnóstico independente por perfil
+
+- Os resultados do diagnóstico agora ficam separados pelo índice de cada perfil.
+- Voltar a um perfil mantém os resultados já obtidos, sem repetir as consultas.
+- A primeira entrada em um perfil diagnostica apenas addons sem resultado; addons adicionados depois também são detectados.
+- O botão de atualização continua refazendo o diagnóstico dos addons do perfil atual.
+- Progresso e estado de carregamento também são separados por perfil.
+- Respostas de uma sessão encerrada são descartadas para não misturar diagnósticos de contas diferentes.
+- Navegadores ou conexões que não conseguem consumir o fluxo progressivo podem concluir o diagnóstico pela resposta JSON.
+- Falhas de manifesto agora mostram o motivo técnico retornado pela consulta, facilitando identificar erros específicos de rede ou resposta.
+
 # Nuvio Control Center v0.10 — Core Stable
 
 ## Revisão do Core
