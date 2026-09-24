@@ -119,6 +119,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, kind, name })
     }
 
+    if (kind === 'profile-delete') {
+      if (profileId === 1) return NextResponse.json({ error: 'O perfil principal não pode ser excluído.' }, { status: 400 })
+      const remoteProfiles = await nuvioCall('/rest/v1/rpc/sync_pull_profiles', token, { method: 'POST', body: '{}' })
+      const currentProfiles = Array.isArray(remoteProfiles) ? remoteProfiles : []
+      if (currentProfiles.length <= 1) return NextResponse.json({ error: 'A conta precisa manter pelo menos um perfil.' }, { status: 409 })
+      if (!currentProfiles.some((profile: any) => Number(profile?.profile_index ?? profile?.id) === profileId)) return NextResponse.json({ error: 'O perfil já não existe na conta.' }, { status: 404 })
+      await nuvioCall(`/rest/v1/profiles?profile_index=eq.${encodeURIComponent(profileId)}`, token, {
+        method: 'DELETE',
+        headers: { Prefer: 'return=minimal' },
+      })
+      return NextResponse.json({ ok: true, kind, profileId })
+    }
+
     if (kind === 'profiles') {
       const profiles = Array.isArray(body?.profiles) ? body.profiles : null
       if (!profiles || profiles.length < 1 || profiles.length > 6) return NextResponse.json({ error: 'A conta deve ter de 1 a 6 perfis.' }, { status: 400 })

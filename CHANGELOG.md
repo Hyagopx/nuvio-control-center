@@ -1,3 +1,8 @@
+# Nuvio Control Center v0.11.6 — Exclusão de Perfis
+
+- O gerenciador permite excluir perfis secundários, com confirmação e proteção contra exclusão do perfil principal ou do último perfil.
+- A exclusão compara a lista com a leitura mais recente da Cloud, salva um snapshot local e confirma o resultado por releitura.
+
 # Nuvio Control Center v0.11.5 — Identidade Visual
 
 - Adicionado um ícone vetorial inspirado na marca Nuvio para a aba e instalação como app.

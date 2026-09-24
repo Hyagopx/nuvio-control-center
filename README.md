@@ -1,6 +1,6 @@
 # Nuvio Control Center
 
-**Versão: v0.11.5 — Identidade Visual e Créditos**
+**Versão: v0.11.6 — Exclusão de Perfis**
 
 Painel pessoal, executado no navegador, para consultar e administrar perfis e dados da conta Nuvio. O projeto também importa/exporta backups, diagnostica addons e integra a biblioteca com o Trakt.
 
