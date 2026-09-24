@@ -1,0 +1,103 @@
+/* Shared interaction and layout foundations for every screen. */
+:where(button, input, select, textarea) { font: inherit; }
+html { min-width: 320px; scroll-behavior: smooth; scrollbar-gutter: stable; }
+body { min-width: 320px; overflow-x: clip; }
+
+:where(button, a, input, select, textarea, summary) {
+  -webkit-tap-highlight-color: transparent;
+}
+:where(button, a, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--color-accent-bright);
+  outline-offset: 3px;
+}
+button { touch-action: manipulation; }
+button:disabled { cursor: not-allowed; }
+
+.content { min-width: 0; }
+.page-head { align-items: center; min-width: 0; }
+.page-head > div:first-child { min-width: 0; }
+.page-head h1 { max-width: 28ch; overflow-wrap: anywhere; }
+.page-head p { max-width: 68ch; line-height: 1.55; overflow-wrap: anywhere; }
+.page-head .eyebrow { line-height: 1.5; }
+
+.profile-strip {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.profile-label { white-space: nowrap; }
+.profile-tabs { min-width: 0; scrollbar-width: thin; scrollbar-color: var(--color-border-strong) transparent; }
+.profile-tabs button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  max-width: min(15rem, 65vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+.profile-dot.has-image { flex: 0 0 1.375rem; }
+.profile-manage-button { min-height: 42px; white-space: nowrap; }
+
+.pending-global,
+.notice,
+.alert { min-width: 0; overflow-wrap: anywhere; }
+.pending-global > div:first-child { min-width: 0; }
+.pending-global b,
+.pending-global span { line-height: 1.5; }
+.pending-actions { flex: 0 0 auto; }
+
+.panel-head,
+.modal-head,
+.drawer-head { min-width: 0; }
+.panel-head > div,
+.modal-head > div,
+.drawer-head > div { min-width: 0; }
+.panel-head h2,
+.panel-head p,
+.drawer-head h2 { overflow-wrap: anywhere; }
+
+.toolbar,
+.row-actions,
+.drawer-actions,
+.modal-actions { min-width: 0; }
+.row-actions > button,
+.drawer-actions > button,
+.modal-actions > button { min-height: 42px; }
+
+@media (max-width: 820px) {
+  .profile-strip {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.5rem 0.75rem;
+  }
+  .profile-label { grid-column: 1; }
+  .profile-tabs { grid-column: 1 / -1; grid-row: 2; width: 100%; }
+  .profile-manage-button { grid-column: 2; grid-row: 1; }
+  .page-head { align-items: flex-start; }
+  .pending-actions { display: flex; width: 100%; }
+  .pending-actions > button { flex: 1 1 0; }
+}
+
+@media (max-width: 520px) {
+  html { scroll-behavior: auto; }
+  .login-card { width: 100%; min-width: 0; padding: 1.25rem; }
+  .login-card form,
+  .login-card label,
+  .login-card input,
+  .login-card button { min-width: 0; max-width: 100%; }
+  .login-copy h1 { overflow-wrap: anywhere; line-height: 1.2; }
+  .page-head h1 { max-width: 100%; font-size: clamp(1.5rem, 7vw, 1.8rem); }
+  .page-head p { font-size: var(--font-size-sm); }
+  .profile-tabs button { max-width: min(12rem, 72vw); min-height: 40px; padding-inline: 0.65rem; }
+  .profile-manage-button { max-width: 100%; min-height: 40px; padding-inline: 0.65rem; font-size: var(--font-size-xs); }
+  .pending-actions { gap: 0.5rem; }
+  .panel-head { flex-wrap: wrap; padding: 1rem; }
+  .row-actions { flex-wrap: wrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}

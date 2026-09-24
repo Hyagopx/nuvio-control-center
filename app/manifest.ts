@@ -13,10 +13,7 @@ export default function manifest(): MetadataRoute.Manifest {
     background_color: '#0b0c0f',
     theme_color: '#0b0c0f',
     icons: [
-      { src: '/icons/nuvio-app.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
-      { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-      { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-      { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      { src: '/brand/nuvio-icon.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
     ],
   }
 }
