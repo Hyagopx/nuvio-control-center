@@ -1,3 +1,10 @@
+# Nuvio Control Center v0.12.0 — Documentação para uso público
+
+- O README agora apresenta o objetivo do projeto, os requisitos, a configuração local e os passos básicos para implantação na Vercel.
+- Os guias de arquitetura e API descrevem corretamente o uso do cookie `HttpOnly` para o refresh token.
+- A documentação da Vercel explica a configuração padrão, os limites das rotas públicas de consulta externa e os controles a considerar antes de compartilhar uma implantação.
+- Removidas referências pessoais opcionais da documentação e dos metadados do pacote.
+
 # Nuvio Control Center v0.11.6 — Exclusão de Perfis
 
 - O gerenciador permite excluir perfis secundários, com confirmação e proteção contra exclusão do perfil principal ou do último perfil.
@@ -7,7 +14,7 @@
 
 - Adicionado um ícone vetorial inspirado na marca Nuvio para a aba e instalação como app.
 - Incluída a marca junto ao nome no painel e na tela de entrada.
-- Crédito discreto a ReiThomato na interface, README e metadados do pacote.
+- Incluída identificação do projeto junto ao nome no painel e na tela de entrada.
 
 # Nuvio Control Center v0.11.4 — Reorganização e Documentação do Repositório
 

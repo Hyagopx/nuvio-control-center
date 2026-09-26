@@ -4,8 +4,8 @@ As rotas são handlers do Next.js em `app/api`. Os exemplos abaixo descrevem a f
 
 | Rota | Método | Finalidade e entrada principal |
 | --- | --- | --- |
-| `/api/nuvio/sign-in` | POST | Autentica com `email` e `password`; retorna tokens de sessão. |
-| `/api/nuvio/refresh` | POST | Renova sessão com `refresh_token`. |
+| `/api/nuvio/sign-in` | POST | Autentica com `email` e `password`; retorna o token de acesso e define o refresh token em cookie `HttpOnly`. |
+| `/api/nuvio/refresh` | POST | Renova a sessão usando o cookie `HttpOnly` (ou `refresh_token` no corpo para compatibilidade). |
 | `/api/nuvio/inventory` | POST | Busca dados da conta Nuvio usando `token`: perfis, addons, plugins, coleções, progresso e configurações. |
 | `/api/nuvio/profile-data` | POST | Lê `token`, `profileId`, `kind` (`library` ou `history`) e `page`; retorna página de dados (até 100 itens). |
 | `/api/nuvio/mutate` | POST | Grava alterações usando `token`, `profileId`, `kind` e os dados da operação. `kind: "profile-delete"` exclui um perfil secundário; alterações de catálogo são verificadas por nova leitura. |

@@ -14,7 +14,7 @@ Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Abra `http://localhost:3000`. Configure em `.env.local`:
+Abra `http://localhost:3000`. Os valores abaixo são opcionais ao usar a API padrão do Nuvio. Para apontar a outra instância, configure em `.env.local`:
 
 | Variável | Uso |
 | --- | --- |
@@ -35,7 +35,16 @@ Não coloque senhas pessoais, tokens de conta ou chaves privadas em `.env.exampl
 
 ## Publicação na Vercel
 
-O repositório usa Next.js e pode ser importado como projeto Next.js na Vercel. Configure as variáveis necessárias no projeto e use a versão de Node indicada em `package.json`. A implantação de produção executa o build; corrija erros de TypeScript antes de publicar. Não dependa de dados mantidos apenas em memória do processo servidor.
+1. Importe o repositório na Vercel e confirme que o framework detectado é Next.js.
+2. Use Node.js `>=20.9.0`, conforme `package.json`. Mantenha os comandos de instalação, build e diretório de saída nos padrões Next.js detectados pela plataforma.
+3. Para usar `https://api.nuvio.tv`, não é necessário configurar variáveis. Para outra Cloud API, defina `NUVIO_API_BASE` e, se aplicável, `NUVIO_SUPABASE_ANON_KEY` nas configurações de ambiente do projeto. Não use prefixo `NEXT_PUBLIC_` para credenciais.
+4. Implante e verifique o resultado do build. A aplicação não depende de arquivos gravados ou estado mantido na memória do processo servidor entre requisições.
+
+### Uso de uma implantação pública
+
+O código não oferece autenticação própria, cotas por usuário ou rate limiting implementado nas rotas de consulta externa. As rotas de diagnóstico, prévia de addon e importação validam os destinos externos para reduzir SSRF, mas visitantes ainda podem iniciar consultas e consumir recursos da implantação. Antes de divulgar uma instância Vercel, configure limites de requisição no Firewall da Vercel e monitore o uso. As regras disponíveis e seus limites variam por plano; consulte a [documentação do Firewall](https://vercel.com/docs/vercel-firewall/vercel-waf/rate-limiting). Para servir várias pessoas com controles próprios, autenticação e medidas contra abuso precisam ser planejadas como trabalho funcional separado.
+
+Uma chave Supabase `anon` não é uma chave administrativa ou segredo de serviço. Nunca substitua-a por uma chave `service_role` nem publique tokens de usuários. Não registre corpos de requisição ou cabeçalhos de autenticação nos logs.
 
 ## Organização dos testes
 

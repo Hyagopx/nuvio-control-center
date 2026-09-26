@@ -2,7 +2,7 @@
 
 ## Visão geral
 
-O Nuvio Control Center é uma aplicação web pessoal para consultar e manter dados de perfis Nuvio. A interface roda no navegador; as rotas do Next.js fazem chamadas autenticadas ao Nuvio Cloud e intermediam operações externas que precisam de validação de rede. O Nuvio Cloud continua sendo a fonte principal dos dados sincronizados. O projeto não mantém um banco de dados próprio.
+O Nuvio Control Center é uma aplicação web para consultar e manter dados de perfis Nuvio. A interface roda no navegador; as rotas do Next.js fazem chamadas autenticadas ao Nuvio Cloud e intermediam operações externas que precisam de validação de rede. O Nuvio Cloud continua sendo a fonte principal dos dados sincronizados. O projeto não mantém um banco de dados próprio.
 
 ```mermaid
 flowchart LR
@@ -36,7 +36,8 @@ flowchart LR
 | --- | --- | --- |
 | Inventário e configurações sincronizados | Nuvio Cloud | Fonte autoritativa da conta. |
 | Token de acesso | Memória do navegador | Enviado às rotas servidoras para chamadas Nuvio. |
-| Refresh token e e-mail | `localStorage` | Usados para recuperar a sessão neste navegador. |
+| Refresh token | Cookie `HttpOnly` | `SameSite=Lax`; `Secure` em produção. Pode durar até 30 dias quando a pessoa escolhe lembrar o dispositivo. |
+| E-mail e preferência de sessão | `localStorage` | Usados para restaurar a experiência neste navegador. |
 | Snapshots e fingerprint local | `localStorage` | Cópias/ajuda local; não substituem a conta Nuvio. |
 | Diagnósticos de addons | Estado da aplicação por perfil | Permanecem durante a sessão da página; não sincronizam entre dispositivos. |
 | Tokens Trakt | Estado do cliente e corpo da chamada | Não são persistidos pelo servidor do projeto. |
@@ -51,7 +52,7 @@ flowchart LR
 
 ## Limites de confiança
 
-- As rotas Nuvio exigem token enviado pelo cliente, mas o projeto não implementa uma camada própria de autenticação de usuários. Não publique como serviço multiusuário sem projetar essa fronteira.
+- As operações da conta Nuvio usam o token fornecido pela sessão, mas o projeto não implementa uma camada própria de autenticação de usuários ou cotas por usuário. As rotas públicas de consulta externa também podem ser chamadas por visitantes. Antes de compartilhar uma implantação, configure limites de uso e monitore abuso; um serviço multiusuário requer uma fronteira de autenticação e controles próprios.
 - Endpoints de URL externa não devem usar `fetch` irrestrito. Use as funções de busca limitada e validação existentes.
 - Mensagens e resultados de diagnóstico são observações de rede do momento, não garantias de disponibilidade permanente do addon.
 - O arquivo `app/page.tsx` ainda concentra boa parte da interface e da coordenação de estado. Mudanças estruturais devem ser pequenas e preservar os contratos das rotas e o isolamento do estado por perfil.

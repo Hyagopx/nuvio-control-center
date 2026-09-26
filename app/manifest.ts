@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     id: '/',
     name: 'Nuvio Control Center',
     short_name: 'Nuvio Control',
-    description: 'Painel para administrar sua conta Nuvio.',
+    description: 'Aplicação web para administrar perfis e dados da conta Nuvio.',
     start_url: '/',
     scope: '/',
     display: 'standalone',

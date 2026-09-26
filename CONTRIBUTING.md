@@ -1,6 +1,6 @@
 # Contribuindo
 
-Este é um projeto pessoal para administrar perfis e dados de uma conta Nuvio. Mudanças devem preservar os dados remotos e deixar explícito o comportamento que será gravado.
+O Nuvio Control Center é uma aplicação web para administrar perfis e dados de uma conta Nuvio. Mudanças devem preservar os dados remotos e deixar explícito o comportamento que será gravado.
 
 ## Antes de alterar
 
@@ -17,10 +17,10 @@ Este é um projeto pessoal para administrar perfis e dados de uma conta Nuvio. M
 - Atualize documentação e CHANGELOG quando mudar comportamento ou contratos.
 - Nunca inclua tokens, senhas, dados reais de conta ou arquivos `.env.local` em commits.
 
-## Revisão antes do commit
+## Revisão antes de abrir uma contribuição
 
-Confira o diff, execute `npm test` para mudanças cobertas por testes e `npm run build` para validar o build de produção. Registre o que foi alterado e qualquer verificação que não pôde ser executada.
+Confira o diff. Para mudanças funcionais, execute `npm test` e `npm run build`; registre o que foi alterado e qualquer verificação que não pôde ser executada. Para alterações apenas de documentação, confirme os links e os comandos citados.
 
 ## Versões e commits
 
-As versões e notas de alteração ficam no topo de `CHANGELOG.md`. Use uma versão nova para cada conjunto de mudanças que será publicado e um assunto de commit curto que descreva o resultado, por exemplo: `docs: v0.11.4 — reorganizar documentação do repositório`.
+As versões e notas de alteração ficam em `CHANGELOG.md`, com a mais recente primeiro. Registre mudanças funcionais e de documentação relevantes com linguagem direta: explique o que mudou e o impacto para quem usa ou mantém o projeto. Use um assunto de commit curto que descreva o resultado.
